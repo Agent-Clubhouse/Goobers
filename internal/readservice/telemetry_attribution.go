@@ -149,8 +149,15 @@ func storedAttributionObservationsLimit(
 	reads readmodel.Reader,
 	query StoredAttributionQuery,
 	limit int,
+	backends ...journal.ReaderBackend,
 ) ([]creditgraph.AttributionObservation, error) {
-	return scanAttributionObservations(ctx, root, reads, query, limit, storedAttributionObservation)
+	observe := storedAttributionObservation
+	if len(backends) > 0 {
+		observe = func(ctx context.Context, layout instance.Layout, row readmodel.RunRow) (creditgraph.AttributionObservation, bool, error) {
+			return storedAttributionObservationWithBackend(ctx, layout, row, backends[0])
+		}
+	}
+	return scanAttributionObservations(ctx, root, reads, query, limit, observe)
 }
 
 type attributionObserver func(
@@ -523,6 +530,12 @@ func storedAttributionObservation(
 	layout instance.Layout,
 	row readmodel.RunRow,
 ) (creditgraph.AttributionObservation, bool, error) {
+	return storedAttributionObservationWithBackend(ctx, layout, row, fileJournalReader(layout))
+}
+
+// Attribution records and ground-truth labels remain local sidecars. Journal
+// provenance, including events and spans, uses the injected authoritative reader.
+func storedAttributionObservationWithBackend(ctx context.Context, layout instance.Layout, row readmodel.RunRow, backend journal.ReaderBackend) (creditgraph.AttributionObservation, bool, error) {
 	runDir, err := layout.FindRunDir(row.RunID)
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("open attribution run %q: %w", row.RunID, err)
@@ -534,12 +547,14 @@ func storedAttributionObservation(
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution record %q: %w", row.RunID, err)
 	}
-	return attributionObservationFromRecord(layout, row, runDir, record)
+	return attributionObservationFromRecord(ctx, backend, layout, row, runDir, record)
 }
 
 // attributionObservationFromRecord rebuilds the audit observation for one
 // run's attribution record from its persisted journal.
 func attributionObservationFromRecord(
+	ctx context.Context,
+	backend journal.ReaderBackend,
 	layout instance.Layout,
 	row readmodel.RunRow,
 	runDir string,
@@ -559,16 +574,15 @@ func attributionObservationFromRecord(
 		observation.ObservedAt = row.StartedAt
 	}
 	labels, err := creditgraph.ReadLabelStore(runDir)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-	case err != nil:
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read ground-truth labels %q: %w", row.RunID, err)
-	default:
-		if label, ok := creditgraph.EffectiveLabel(labels.Labels); ok {
-			observation.GroundTruth = &label
-		}
 	}
-	reader, err := journal.OpenRead(runDir)
+	// A failed record whose journal cannot be read keeps its unfiltered label,
+	// as before groundTruth contracts; attachAcceptedGroundTruth narrows it.
+	if label, ok := creditgraph.EffectiveLabel(labels.Labels); ok {
+		observation.GroundTruth = &label
+	}
+	reader, err := backend.OpenRun(ctx, journal.RunRef{ID: row.RunID})
 	if err != nil {
 		return attributionProvenanceError(record.Status, observation, "open attribution journal", row.RunID, err)
 	}
@@ -585,6 +599,9 @@ func attributionObservationFromRecord(
 		return attributionProvenanceError(record.Status, observation, "read attribution identity", row.RunID, err)
 	}
 	observation.GooberDigest = identity.GooberDigest
+	if err := attachAcceptedGroundTruth(&observation, reader, identity, labels.Labels); err != nil {
+		return attributionProvenanceError(record.Status, observation, "read ground-truth contract", row.RunID, err)
+	}
 	spanData := map[string][]byte{}
 	for _, event := range events {
 		if event.Type != journal.EventSpanRecorded || event.Ref == nil ||
@@ -929,4 +946,33 @@ func parsePositiveInt(raw string) int {
 
 func formatAttributionValue(value float64) string {
 	return fmt.Sprintf("%.6f", value)
+}
+
+// attachAcceptedGroundTruth sets the run's effective label from the labels
+// its pinned backprop.groundTruth contract accepts. Labels from other sources
+// stay recorded but never weight an aggregate.
+func attachAcceptedGroundTruth(
+	observation *creditgraph.AttributionObservation,
+	reader journal.RunReader,
+	identity journal.RunIdentity,
+	labels []creditgraph.GroundTruthLabel,
+) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	contract, err := creditgraph.PinnedGroundTruth(reader, identity)
+	if err != nil {
+		return err
+	}
+	accepted := make([]creditgraph.GroundTruthLabel, 0, len(labels))
+	for _, label := range labels {
+		if creditgraph.AcceptedLabel(contract, label) {
+			accepted = append(accepted, label)
+		}
+	}
+	observation.GroundTruth = nil
+	if label, ok := creditgraph.EffectiveLabel(accepted); ok {
+		observation.GroundTruth = &label
+	}
+	return nil
 }

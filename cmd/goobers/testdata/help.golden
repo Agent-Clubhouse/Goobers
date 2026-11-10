@@ -25,6 +25,8 @@ Commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow child-admission Labs: review children held for human admission approval
+  workflow clusters Labs: cluster workflows by structural shape or run behavior
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
 
@@ -73,6 +75,8 @@ Commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow child-admission Labs: review children held for human admission approval
+  workflow clusters Labs: cluster workflows by structural shape or run behavior
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
 
@@ -118,6 +122,8 @@ Core commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow child-admission Labs: review children held for human admission approval
+  workflow clusters Labs: cluster workflows by structural shape or run behavior
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
 
@@ -137,9 +143,6 @@ Advanced operator commands:
   doctor            preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
   e2e kill-inject   perform one live S6 kill-matrix cell (pod-kill) against a real cluster
   e2e verify        verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
-  engine-project    write a completed engine run's journal into the instance (experimental)
-  engine-queues     report which workers poll this instance's engine and dispatch task queues (experimental)
-  engine-start      dispatch one run onto the tier-3 engine via Temporal (experimental)
   escalations resolve resolve an escalated run through the daemon's HITL plane
   escalations show  show escalation cause, verdict, and per-stage artifact timeline
   explain           project field facts from an embedded JSON Schema
@@ -149,6 +152,7 @@ Advanced operator commands:
   gaggle            export or import sanitized portable gaggle bundles
   harness           inspect or manage harness lifecycle operations
   journal redact    remove a leaked secret from a stored blob (SEC-041)
+  labs              Labs: experimental, advisory reports
   lint              lint config via the single authoritative validation engine (alias for validate)
   netpol-render     render per-runner-class NetworkPolicy reference manifests from the runners: inventory
   onboarding        run non-interactive onboarding actions
@@ -161,6 +165,7 @@ Advanced operator commands:
   recovery-restore  restore retained implementation onto current main
   rerun-stage       rerun a stage with a recorded instruction addendum
   reset-rate-limit  clear the hourly run-rate budget without deleting runs/
+  retry-stage       retry a previously-run deterministic task
   roots decommission mark a stopped instance root as historical
   roots discover    discover likely instance roots and daemon ownership
   run abort         mark a stuck non-terminal run aborted
@@ -179,7 +184,7 @@ Advanced operator commands:
   temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
-  worker            host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
+  workflow-gym      validate, replay, compare, evaluate, or hand off Workflow Gym evidence
   workspace         explicitly recover pinned repository workspaces
 
 Workflow-stage and connector commands:
@@ -194,9 +199,11 @@ Workflow-stage and connector commands:
   check-fail-first  enforce fail-first evidence for a new workflow gate (a workflow stage)
   check-issue-staleness route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
   config-checkout   clone the instance config repository for a config-repo-targeted stage (a workflow stage)
+  decide            ask the decision model a thresholded yes/no question (a workflow stage)
   docs-churn        emit the docs-drift churn digest since the watermark (a connector stage)
   elect-lander      elect the landing PR among a merge-review cohort (a workflow stage)
   file-issues       file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+  fluid-ui-request  load a Labs Fluid UI request or validate its customization candidate (a workflow stage)
   gate-removal-guard block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   gather-ci-failures add failing CI diagnostics to a remediation brief (a workflow stage)
   gather-implement-context load first-pass implementation review and hot-file context (a workflow stage)
@@ -255,9 +262,11 @@ Usage:
   check-fail-first  enforce fail-first evidence for a new workflow gate (a workflow stage)
   check-issue-staleness route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
   config-checkout   clone the instance config repository for a config-repo-targeted stage (a workflow stage)
+  decide            ask the decision model a thresholded yes/no question (a workflow stage)
   docs-churn        emit the docs-drift churn digest since the watermark (a connector stage)
   elect-lander      elect the landing PR among a merge-review cohort (a workflow stage)
   file-issues       file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+  fluid-ui-request  load a Labs Fluid UI request or validate its customization candidate (a workflow stage)
   gate-removal-guard block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   gather-ci-failures add failing CI diagnostics to a remediation brief (a workflow stage)
   gather-implement-context load first-pass implementation review and hot-file context (a workflow stage)
@@ -395,7 +404,11 @@ standing comment is marked stale, and a standing verdict status on the
 unchanged head turns pending; exit 0 (this
 cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
-selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
+selectedBaseSha from Task.InputsFrom. Every published verdict carries
+standingFindings: the findings earlier reviews raised on the same head
+that no verdict answered in its dispositions (resolved with evidence,
+or rejected with a reason). A pass that leaves one standing is
+published as needs-changes (#5890). Exit codes: 0 = applied (or
 voided), 1 = business error, 2 = usage/IO error.
 
 ### approve
@@ -648,11 +661,13 @@ Print item id, gaggle, provider, run id, workflow, claimed-at, and
 expires-at for each claim. Filters may be combined. Default path is ".".
 
 ### claims release
-Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
+Usage: goobers claims release [--publication-custody-reason=text] [--force] [--gaggle=name --provider=name] <item-id> [path]
 
 Print the claim holder, age, and expiry, then force-release the item.
 --force is required while the holding run is non-terminal. The override
-is recorded as claim.force_released in the instance journal. Default
+is recorded as claim.force_released in the instance journal. Publication
+locks additionally require --publication-custody-reason and audit the OS
+operator identity before release. Default
 path is ".". Scope flags are required when the item id exists in more
 than one namespace. Exit codes: 0 = released, 1 = refused/not found/
 ambiguous, 2 = usage/IO error.
@@ -908,6 +923,43 @@ of --port when given; binding a non-loopback host requires api.auth to be
 configured in instance.yaml (SEC-043) — there is no insecure override.
 Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or
 browser failure, 2 = usage/IO error.
+
+### decide
+Usage: goobers decide --name <id> --question <text> --state-file <path> [flags] [path]
+
+Ask the instance's decision model a yes/no question about a JSON state
+document and write a thresholded, deterministic-ish decision to the stage
+result file. Code, not the model, owns facts: use this only for semantic
+judgments, never for structural validity.
+
+Requires decisionGate to be on in the instance config. In shadow mode the
+model is still called and recorded but the reported decision is always
+"uncertain", so a shadowed step never changes a run's outcome.
+
+Result keys: decision (yes|no|uncertain|unavailable), probability, mode,
+fallback, stateDigest. An uncertain or unavailable answer follows
+decisionGate.fallback: fail exits 1; agent and escalate exit 0 so the
+workflow can route to an agent or a human.
+Flags:
+  --name <id>         stable question name (letters, digits, - _ .)
+  --question <text>   the yes/no question
+  --true <text>       what "yes" means (optional)
+  --false <text>      what "no" means (optional)
+  --state-file <path> JSON file the question is about
+  --accept <p>        yes at or above this probability (default from config, else 0.9)
+  --reject <p>        no at or below this probability (default from config, else 0.1)
+  --optional          when the gate is off or unreachable, report "unavailable" and exit 0
+
+Advisory CI failure triage (opt-in, shadow first; the existing path is the fallback):
+  --ci-log <path>     classify a failed CI log as flaky, real, infra or environment. Code
+                      decides known facts first; otherwise the model sees only a redacted,
+                      size-bounded excerpt. Result keys: class (unsure keeps today's path;
+                      always unsure in shadow mode), predicted, source, digest.
+  --ci-baseline <v>   code fact: pr-introduced or shared-baseline-failure
+  --run-key <id>      record the prediction (or outcome) under this run identity
+  --ci-outcome <c>    record the eventual cause (flaky|real|infra|environment) for --run-key
+  --ci-matrix         report the confusion matrix of predictions joined to outcomes
+Exit codes: 0 = decision written, 1 = failed, 2 = usage error.
 
 ### diagnostics
 Usage: goobers diagnostics <subcommand> [flags] [path]
@@ -1297,77 +1349,6 @@ and advisoryMode (inputsFrom gather-sibling-context).
 Exit codes: 0 = decided (elected or not — both normal), 1 = business
 error, 2 = usage/IO error.
 
-### engine-project
-Usage: goobers engine-project [flags] <run-id> [path]
-
-Write a completed engine run's standard journal into the instance.
-
-Exit codes: 0 = projected or already present, 1 = query/write failure,
-2 = usage/config error.
-
-### engine-queues
-Usage: goobers engine-queues [flags] [path]
-
-Report which workers poll this instance's engine task queues (experimental).
-The queue set is derived, not typed: the engine's workflow queue plus every
-goobers-dispatch.<gaggle>.<runner> queue the runners: inventory and the
-declared gaggles imply — the same derivation `goobers worker
---dispatch-namespace` serves. Each queue is described for both task types
-(workflow and activity) and every poller's Temporal identity is printed.
-
-This is the evidence for the queue-ownership check: goobers-worker must poll
-the workflow queue and every dispatch queue, and goobers-api must poll none
-of them — the daemon dispatches as a Temporal client and is never a pod
-creator.
-
-Flags:
-  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort)
-  --temporal-namespace <ns>  Temporal namespace (default engine.namespace)
-  --task-queue <queue>       workflow queue to describe (default
-                             engine.taskQueue)
-  --timeout <duration>       bound on the whole describe (default 30s)
-  --json                     emit the report as JSON
-
-Exit codes: 0 = described, 1 = describe/connection failure, 2 = usage/config
-error.
-
-### engine-start
-Usage: goobers engine-start [flags] <workflow> [path]
-
-Dispatch one run onto the tier-3 engine (experimental).
-
-When a `goobers up` daemon holds this instance's lock the dispatch is
-DELEGATED to it: the daemon admits the run through the scheduler (so it
-takes a concurrency slot, records an instance-log run.started, reserves
-the run journal and fires the terminal hooks on completion) and starts
-the workflow through its own engine starter. The run id is the
-scheduler's, and --dedupe-key is refused, because the daemon mints a
-fresh run id per admission.
-
---direct bypasses scheduler admission and queues an exact input for
-Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
-workflow and --dedupe-key. That is the only mode in which --dedupe-key
-means anything: a direct start's run id IS its dedupe unit, whereas a
-delegated dispatch dedupes DELIVERIES (by request id) and not work.
-A direct start takes no scheduler slot and fires no terminal hooks.
---direct is implied when no daemon is running.
-
-Direct starts commit their complete input and exact frontend, namespace
-and task queue to the shared start ledger before contacting Temporal.
-Same-key retries reuse that input. Changed options or credential selectors
-refuse; no current workflow is substituted. The daemon can drain pending
-direct receipts and reconcile an uncertain reply. After any attempted
-start, missing or deleted history remains uncertain and is never resent.
-Confirmation requires the exact input and task queue in Temporal history.
-
---live-journal pins live journal authorship into the run: workers emit
-journal events through the daemon's journal plane as they happen, so the
-run is visible mid-flight; without it the journal is projected from
-history at close, as before. Requires the daemon's write API to be
-reachable from every worker serving the run (worker --daemon-api).
-
-Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
-
 ### escalations
 Usage: goobers escalations [--json] [--limit=<n>] [--since=<time>] [--api=<url>] [path]
        goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
@@ -1508,7 +1489,7 @@ checkStage (validate-nominations), resultFile (filed-nominations.json).
 Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
 
 ### fix
-Usage: goobers fix (--to <version> | --instance-schema) [--write] [path]
+Usage: goobers fix (--to <version> | --instance-schema | --rollback) [--write] [--allow-policy-expansion] [path]
 
 Exactly one mode is required per invocation.
 
@@ -1527,6 +1508,16 @@ silent multi-step rewrite. Never runs automatically; this is always an
 author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
 migrate), 1 = one or more workflows could not be migrated,
 2 = usage/IO error.
+
+DSL 2.0 to 2.1 is an opt-in PREVIEW migration. Watcher comment-on-issue
+additions are listed in the diff; --write requires --allow-policy-expansion
+when new actions are added. The diff also includes each Workflow's required
+metadata.annotations goobers.dev/allow-preview-features: "true" opt-in.
+--to 2.1 --write accepts this displayed preview target. Authored opt-outs
+are refused; Instance/Gaggle settings stay unchanged.
+2.1 writes save one bounded .dsl21-migration-backup.json outside config.
+--rollback restores its original bytes, refusing modified destinations.
+After acceptance, archive/remove that backup before another migration.
 
 --instance-schema is the one-line remedy for the instance.yaml load
 refusal "runners: requires schemaVersion 2" (#4217): a config that
@@ -1554,7 +1545,7 @@ are stored outside the instance root so copying an instance does not clone its
 identity.
 
 ### fleet join
-Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [--projection <name>] [path]
 
 Experimental and superseded embedded Fleet connector. Discover and enroll an
 instance with a Fleet service. By default the one-time enrollment grant is read
@@ -1567,6 +1558,9 @@ offers an explicit instance:read self-grant. Noninteractive use must choose
 --grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
 explicit opt-out or interactive confirmation.
 
+--projection grants a data projection to the Fleet association and may be
+repeated. Supported projections: labs.workflowFeatures.
+
 ### fleet leave
 Usage: goobers fleet leave [path]
 
@@ -1578,8 +1572,28 @@ removal and stops reconnecting.
 Usage: goobers fleet status [--json] [path]
 
 Experimental and superseded embedded Fleet connector. Show the durable Fleet
-registration, connection, heartbeat, ACL version, and credential expiry state.
+registration, connection, heartbeat, projection, ACL version, and credential expiry state.
 Private key and bearer credential material are never printed.
+
+### fluid-ui-request
+Usage: goobers fluid-ui-request (--load | --validate) [path]
+
+fluid-ui-request is the fluid-ui-customize workflow's deterministic stage
+(Labs Fluid UI, docs/labs-fluid-ui.md).
+
+--load writes the ID of the request this run serves (never its text), the
+requester's current portal.customization/v1 document and the surface to
+the result file, for the propose stage to read. The daemon binds the run to
+its request when the trigger is accepted; --load waits briefly for that
+binding.
+
+--validate reads the propose stage's candidate and classifies it as a
+valid customization, an explicit unsupported request, or invalid output
+(repassable once, with its validation errors). It never applies anything:
+the daemon re-validates the candidate and the user applies it.
+
+Exit codes: 0 = result written (an invalid candidate is not an error) /
+1 = IO or binding error / 2 = usage error.
 
 ### gaggle
 Usage: goobers gaggle export|import [flags]
@@ -1733,7 +1747,10 @@ so the stage forces a fresh review instead; --no-verdict-cache skips that
 lookup, always forcing a fresh review. It also resolves the selected PR's
 base drift deterministically (selectedBaseDrift: current|behind|unknown,
 with selectedMergeBaseSha/selectedBaseTipSha) so the reviewer is told
-whether the base moved instead of inferring it. Exit codes: 0 = context
+whether the base moved instead of inferring it, and lists as
+standingFindings the findings an earlier review raised on the selected
+head that no later review resolved or rejected, for the reviewer to
+answer (#5890). Exit codes: 0 = context
 gathered (possibly empty — no siblings is not an error), 1 = business
 error, 2 = usage/IO error.
 
@@ -1926,8 +1943,42 @@ the leaked bytes exactly (no trailing newline unless the secret has one):
 
 Exit codes: 0 = redacted, 1 = nothing redacted / business error, 2 = usage/IO error.
 
+### labs
+Usage: goobers labs fluid-ui report [flags] [path]
+
+Labs (experimental) reports. Results are advisory and never change
+configuration, gates, global defaults, or any user's customization.
+
+Commands:
+  fluid-ui report  rank Fluid UI customization shapes as promotion candidates
+
+### labs fluid-ui
+Usage: goobers labs fluid-ui report [flags] [path]
+
+Labs (experimental) reports. Results are advisory and never change
+configuration, gates, global defaults, or any user's customization.
+
+Commands:
+  fluid-ui report  rank Fluid UI customization shapes as promotion candidates
+
+### labs fluid-ui report
+Usage: goobers labs fluid-ui report [--json] [path]
+
+Labs (experimental): rank the Fluid UI customization shapes users apply as
+candidates for the standard Portal (#8419). Shapes are ranked by distinct
+users who kept them applied for at least 7 days, then by a lower reversion
+rate, then by distinct users. One user's repeated revisions count once.
+Unmet needs list request categories the customization schema cannot express.
+
+The report reads the learning log under <path>/labs/fluid-ui (default path
+"."). It holds only counts, shapes, and category labels: never prompt text,
+identities, panel IDs, saved-view names, or routes.
+
+Candidates are advisory product proposals. They never change global defaults
+or any user's customization.
+
 ### lint
-Usage: goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]
+Usage: goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--target local|cloud [--format text|json]] [--strict] [path]
 
 Lint an instance's instance.yaml and config/ directory (default path
 ".") against the single authoritative validation engine. This is an
@@ -1940,7 +1991,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, RUNTIME001, RUNTIME002, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -1997,7 +2048,10 @@ review comment counts until answered. Feedback that
 cannot be read refuses as human-feedback-unverifiable. Comments are
 classified as pr-comment-watch classifies them, under the same
 identityMode and excludeAuthors inputs. Set false to merge over
-comments), resultFile (default merge-result.json). Successful merges
+comments), resultFile (default merge-result.json). It also refuses
+while a finding an earlier review raised on the live head stands
+unanswered: a later pass clears none without a resolved or rejected
+disposition (#5890). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked,
 skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
 (merged or not — see the result file's "merged" field), 1 = business
@@ -2272,7 +2326,8 @@ issue the merged PR's body references (Fixes/Closes/Resolves #N)
 done. When the backlog lives on another provider than the PR (a
 GitHub backlog for Azure DevOps code), only references by the
 issue's full URL count. Declared input: pullNumber (required — the
-just-merged PR).
+just-merged PR). With github:pr:review declared, withdraw native passes
+whose reviewed files were invalidated by the base movement.
 Exit codes: 0 = done (even if the PR body references no issue, or
 there are no other open PRs — both are normal outcomes, not
 errors), 1 = business error, 2 = usage/IO error.
@@ -2368,6 +2423,16 @@ identity, such a comment is that person's and counts as human.
 rebase-pr and update-behind-pr classify comments by this same rule
 before they clear needs-remediation; give them the same identityMode and
 excludeAuthors.
+
+With DSL 2.1, 3.0 or 3.1, shared mode permits three routing attempts
+per PR head, recorded on the PR; declare label-issue and comment-on-issue.
+Further attempts park it with needs-human and merge-escalated and a
+visible note; feedback remains unaddressed. A new head resets the budget.
+An explicit DSL 2.0 workflow keeps label-only routing without this budget
+or its comment writes. Dedicated mode does not use the shared-mode cap.
+Standalone calls without a DSL pin or stage context use the guarded default.
+Stages must carry their pinned DSL version; a missing or unknown version
+is refused before provider writes.
 
 Remediation responses carry a feedback-ack frontier: the newest
 timestamp in the feedback snapshot the run assessed, to the second. Such
@@ -2577,6 +2642,9 @@ issue close-out, and sibling fan-out through the normal post-merge path;
 an open or unmerged pull request remains pending. Completed entries are
 durably skipped on later runs. Task inputs maxPullRequests and lookback
 set the same bounds (defaults: 10 and 168h; hard maximum: 100).
+With github:pr:review declared, also revisit a resumable bounded batch
+of open PR verdicts and withdraw passes invalidated by base movement,
+including external merges. Failed PRs retry without starving later pages.
 Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.
 
 ### record-merge-refusal
@@ -2696,6 +2764,9 @@ which clears the rate window only by destroying everything with it.
 Takes effect on the next `goobers up`/`goobers run` (stop the daemon
 first if one is running; the reset is applied when the scheduler next
 reconstructs its budget window). Default path ".".
+Local instances only: the marker is a file under the instance directory,
+so a cloud (goobers-cloud) scheduler never reads it. The cloud refuses a
+reset explicitly and has no equivalent yet (tracked in L1d/L1e).
 Exit codes: 0 = reset written, 2 = usage/IO error.
 
 ### resolve-review-threads
@@ -2731,6 +2802,18 @@ without claiming those local changes landed.
 [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = response
 processed, 1 = business error, 2 = usage/IO error.
 
+### retry-stage
+Usage: goobers retry-stage [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
+
+Retry one previously-run deterministic task on an escalated run without
+replaying earlier stages or supplying agent instructions. The actor, target,
+terminal generation, and retry attempt are recorded in the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+
 ### roots
 Usage: goobers roots <discover | decommission> [flags] [path]
 
@@ -2755,8 +2838,8 @@ time is only file freshness, never proof of a running daemon. Exit codes: 0 = co
 within the stated search scope, 1 = partial, 2 = error.
 
 ### run
-Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number> | --work-item <id>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number> | --work-item <id>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel [--api <url>] <run-id> [path]
@@ -2792,6 +2875,14 @@ Without a live daemon, workflows with an effective runControls.maxRunDuration
 are rejected before dispatch, including inherited limits and --no-wait runs.
 Start `goobers up` for that instance and submit through the daemon instead.
 Targeted --pr runs currently require --no-api from the instance root.
+--work-item selects one numeric work item and requires an explicit gaggle;
+it cannot be combined with --pr or --force. Exact selection retains normal
+eligibility and claim checks and never falls back to another item.
+API targets must advertise exactWorkItem; same-root file delegation requires
+the live daemon's exactWorkItemFile lock capability. Upgrade older daemons.
+Explicit --request-id is not supported for file delegation: that transport
+does not yet bind caller retry keys to immutable targets. Do not retry an
+unknown file submission as a new request; inspect its existing receipt.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires
 checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,
@@ -3259,7 +3350,7 @@ see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|gaggle|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -3272,6 +3363,7 @@ label:   record a ground-truth verdict for a Backprop-enrolled run
 claim:   append a Backprop claim from inside an agentic stage
 claims:  print the Backprop claims earlier stages of this run recorded
 shadow:  compare Backprop shadow-mode findings with actual run outcomes
+gaggle:  gaggle-wide Backprop credit, recurring findings, trends, and links
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -3343,6 +3435,18 @@ Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
 Every discovered run journal is validated before output; missing, corrupt, or
 unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 1 = journal data error, 2 = usage/output error.
+
+### telemetry gaggle
+Usage: goobers telemetry gaggle --gaggle=name [--json] [--since=RFC3339] [--until=RFC3339] [path]
+
+Summarize one gaggle's active Backprop attribution across its workflows:
+per-workflow and per-stage credit and blame share, the top recurring
+findings, each workflow's trend against the previous window of the same
+length, and cross-workflow links. A link exists only where two runs
+recorded the same identifier (an external reference touched by both, or a
+run continuation); nothing is inferred. The window defaults to the seven
+days before --until (default now). Shadow records are never read. Exit
+codes: 0 = OK, 1 = query error, 2 = usage error.
 
 ### telemetry label
 Usage: goobers telemetry label --run=<run-id> --outcome=correct|incorrect [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
@@ -3495,7 +3599,7 @@ object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO
 error, 130 = interrupted while following.
 
 ### up
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--recover-config-generation digest] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
@@ -3518,7 +3622,10 @@ startup after reporting each candidate.
 
 Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
-It does not skip the harness admission preflight: a workflow whose agentic
+--recover-config-generation selects and restores a retained applied catalog
+by digest after strict verification. The live candidate stays rejected;
+this does not overwrite source files or bypass retained permission checks.
+--skip-preflight does not skip the harness admission preflight: a workflow whose agentic
 stage needs a harness that fails its startup check is still refused, while
 other workflows keep running. A check that failed only because the model
 provider was rate limiting or unreachable is re-run with backoff, and the
@@ -3566,7 +3673,11 @@ merge-base or at a base commit since, is red because its base was, so
 it is updated the same way. Other candidates are routed to full
 remediation, including a PR carrying goobers:needs-remediation that has
 human feedback no Goobers response has answered: this lane clears that
-label, and the feedback needs the agentic path. Comments are classified
+label, and the feedback needs the agentic path. So is a PR whose head
+carries a finding an earlier review raised and no later review resolved
+or rejected, even under a later pass: a current branch does not heal
+it (#5890). A verdict ledger that cannot be read fails the stage.
+Comments are classified
 as pr-comment-watch classifies them, under the same identityMode
 (dedicated or shared; default dedicated) and excludeAuthors inputs; set
 them to pr-comment-watch's values. A run dispatched for one
@@ -3580,7 +3691,7 @@ reselects a candidate itself. Exit codes: 0 = updated, routed,
 not-applicable, or no-work; 1 = business error; 2 = usage/IO error.
 
 ### validate
-Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--strict] [path]
+Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--target local|cloud [--format text|json]] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). Placement findings (RNR001/RNR003) are errors when
@@ -3589,7 +3700,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --target cloud adds engine-only runtime eligibility findings; the default local target preserves local execution and exit behavior. With --target cloud, --format json emits the versioned whole-instance cutover-readiness report. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, WF029, RUNTIME001, RUNTIME002, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
@@ -3652,113 +3763,131 @@ List pull requests and issues changed by recorded provider mutations. Use
 --id with --provider, --repository, and --kind to show one item.
 Exit codes: 0 = OK, 2 = usage, query, or I/O error.
 
-### worker
-Usage: goobers worker [--task-queue <queue>]... [flags]
-
-Host a Temporal worker for the tier-3 engine (experimental): connect to the
-configured Temporal frontend, register the engine workflow and activities,
-and serve the named task queue(s) until SIGTERM/SIGINT, then drain — stop
-polling and let in-flight activities finish within --drain-timeout.
-Child dispatch cleanup can take up to 5 additional minutes before exit.
-
-The tier-3 engine is not on the local (V0) execution path; this command is
-the deployable worker shape for the cloud ladder. Automated gate checks and
-workspace provisioning (git worktrees + scratch dirs under --work-root) are
-wired. With --instance, the worker also wires the same agentic and
-deterministic executors as the local runner; without it, stages needing
-those executors fail closed with a clear error.
-
-Flags:
-  --instance <dir>           instance root; wires the real agentic and
-                             deterministic executors (default
-                             $GOOBERS_INSTANCE_ROOT)
-  --blob-store <dir>         directory backing the fleet-wide
-                             content-addressed artifact store (default
-                             $GOOBERS_BLOB_STORE)
-  --blob-endpoint <url>      HTTP(S) blob plane; alternative to --blob-store
-                             (default $GOOBERS_BLOB_ENDPOINT only when no
-                             directory is selected). Instance-backed workers
-                             require exactly one store mode.
-  --task-queue <queue>       task queue to serve; repeatable (default
-                             engine.taskQueue, with env override)
-  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort,
-                             with env override)
-  --temporal-namespace <ns>  Temporal namespace (default engine.namespace,
-                             with env override)
-  --drain-timeout <dur>      graceful-drain bound after a shutdown signal
-                             (default 30s)
-  --work-root <dir>          root for stage workspaces (default: a
-                             goobers-worker dir under the OS temp dir)
-  --daemon-api <url>         daemon write API base URL; wires live journal
-                             emission through the journal plane, with the
-                             per-run bearer from $GOOBERS_POD_TOKEN when
-                             set (default $GOOBERS_DAEMON_API)
-  --config-reload-interval <dur>
-                             how often to re-read the instance config
-                             tree and rebuild the gaggle seams whose
-                             config changed, without a restart; 0
-                             disables reload and freezes the worker on
-                             its boot-time tree (default 10s; requires
-                             --instance)
-  --config-history-depth <n>
-                             how many superseded config trees to retain
-                             so an in-flight run pinned to one is still
-                             served the goober kit it was admitted
-                             against across a reload; 0 disables
-                             retention and refuses every superseded pin
-                             (default 3; requires --instance)
-  --dispatch-namespace <ns>  enables mode-3 stage dispatch: wires the
-                             dispatcher behind the stage-dispatch seam and
-                             serves the per-(gaggle x runner) dispatch
-                             queues derived from the instance's runners:
-                             inventory. Each stage pod is created in ITS
-                             OWN gaggle's declared isolation.namespace
-                             (#4897) — this flag's value no longer selects
-                             the pod namespace and is kept only as the
-                             non-empty signal that enables mode-3 dispatch.
-                             Before polling or dispatching, the worker
-                             verifies every declared gaggle namespace
-                             exists and that this worker's credentials
-                             hold the RBAC grants dispatch needs there,
-                             failing startup by name otherwise. Requires
-                             --instance and one artifact store mode. In
-                             endpoint mode the worker reads surrendered
-                             results through --daemon-api; cluster access
-                             uses in-cluster credentials or the standard
-                             kubeconfig rules (default
-                             $GOOBERS_DISPATCH_NAMESPACE)
-
-The worker identity reported to Temporal is versioned
-(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which
-build serves a queue.
-
-With --instance, the worker re-reads its config tree on
---config-reload-interval and atomically replaces the gaggle, credential,
-and agentic-kit seams whose config changed, so a definitions edit reaches
-the NEXT stage this worker serves without a pod restart. An attempt
-already running keeps the kit it was handed. A reload that does not parse
-is logged and rejected; the last-known-good tree stays in force.
-
-An agentic stage is served the goober kit its run pinned at start
-(run.yaml's gooberDigest), resolved against the current config tree or
-one of the --config-history-depth superseded trees still retained. A pin
-no retained tree satisfies is REFUSED by name (gate_pin_missing), loudly
-and retriably, naming the expected digest: the worker never substitutes
-its currently-configured goober for the one the run was admitted
-against. Such an attempt recovers by itself once a reload brings the
-pinned tree into force.
-
-Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
-3 = drain timeout expired with in-flight work abandoned.
-
 ### workflow
-Usage: goobers workflow <show | validate-child> [flags]
+Usage: goobers workflow <show | validate-child | child-admission | clusters> [flags]
 
-Show a workflow DAG or validate a generated child proposal against its configured parent.
+Show a workflow DAG, validate a generated child proposal against its configured parent,
+(Labs) review children held for human admission approval, or (Labs) cluster
+workflows by structural shape or run behavior.
 
 Workflow
 
 A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.
+
+### workflow child-admission
+Usage: goobers workflow child-admission [--approve <child-id> | --reject <child-id>] [--actor <identity>] [--note <text>] [--json] [path]
+
+Review generated child workflows held for human admission approval because
+the parent's childWorkflows.requireHumanApprovalForOutOfDistribution policy
+(Labs) found them outside every cluster of the frozen model. A held child keeps
+durable custody but is never dispatched until approved.
+
+Without --approve or --reject, list pending children with their pinned novelty
+evidence. --approve releases the child to ordinary dispatch and journals the
+approval in its lineage; --reject settles it as a failed child result that the
+parent observes. Decisions are durable and immutable; repeating one is a no-op.
+--actor defaults to the invoking user: GITHUB_ACTOR, USER or USERNAME, then the
+OS account. The actor is self-asserted, matching the trusted-local model:
+anyone who can open the instance's local queue can decide, and the actor is
+recorded for audit, not authenticated. Operates on the instance's local queue
+(default path ".").
+
+Exit codes: 0 = listed or decided, 1 = decision refused, 2 = usage/IO error.
+
+### workflow clusters
+Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|template|model|harness|skills|tools] [--ablation] [--json] [path]
+       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
+       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
+       goobers workflow clusters --proposals [--gaggle <name>] [--max-runs <n>] --json [path]
+       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
+
+Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN
+and report each cluster's medoid, members, stability, and distinguishing
+features. Points that fit no dense group are reported as noise.
+
+--proposals emits the same read contract as the Portal's primary child
+workflow pattern map. Retained proposals are clustered independently per
+gaggle and include only identifiers, digests, structural features, pinned
+novelty, outcomes, EffectiveVersions, and parent/child journal lineage.
+Proposal and prompt text are never emitted. --gaggle selects one partition.
+
+--features structural (default) clusters configured workflows by structural
+shape (node kinds, gates, retries, parallelism, graph topology).
+
+--features behavior clusters what runs actually did: it reads terminal run
+journals (agent-authored child runs included), derives a behavior
+descriptor per run (stage-visit patterns, attempts and retries, gate,
+escalation and human hits, fan-out, child spawns and dispositions, usage,
+duration, outcome, near misses), and clusters one point per workflow
+EffectiveVersion cohort from each feature's mean and p90. Runs without a
+defined EffectiveVersion are excluded. --since keeps runs started within
+that Go duration, --max-runs bounds the journals read (newest first), and
+cohorts with fewer than --min-samples runs are dropped.
+
+Node names, stage names, and goal text never contribute. Structural and
+behavior features are never mixed in one model. --cohort limits structural
+clustering to one privacy-safe task cohort. --stratify tests whether
+clusters merely track gaggle, task-cohort, shipped-template, model, harness,
+skill-set, or tool-set boundaries (a confound). Undefined provenance is excluded and
+counted; that check is observational, not gym-controlled. Nothing is
+modified (default path ".").
+
+Template provenance fingerprints the workflow templates embedded in this
+build: reference workflows, config examples, and the starter, demo,
+quickstart, and scaffold workflows. A workflow is template-derived only
+when it lies within 0.35 structural distance of a shipped template. The
+metadata.annotations["goobers.dev/template-provenance"] written by init and
+scaffolding is reported as declared provenance; it names the attributed
+template while the workflow is still within 0.35 of it, and otherwise the
+nearest shipped template is shown. Cluster medoids farther than 0.35 from
+every shipped template are reported as convergence beyond templates, and
+--stratify template groups derived workflows by template and the rest as
+"beyond-templates". Provenance is reported even when too few
+workflows are configured to cluster. Bare --json stays the frozen model
+that --cluster-model reads; JSON carries the template report alongside
+any other requested report (for example --stratify template --json).
+
+--fitness joins retained terminal runs to the current structural clusters
+by workflow digest and reports sample size, success with a 95% Wilson
+interval, wall time, cost, human-gate, escalation, and retry/loop rates.
+Clusters with fewer than 5 runs are marked insufficient and are never
+ranked. --since limits the retained runs included.
+
+Task cohorts use metadata.labels["goobers.dev/task-class"] when explicitly
+set. Otherwise an auto:<digest> label is derived only from trigger types,
+work-item kinds, the declared policy-action side-effect set, and repo:*
+capabilities. Workflow and stage names, goals, selectors, schedules, signals,
+and webhook payload text are excluded, making derivation deterministic and
+rename-invariant. Behavior summaries read the labels a run pinned at start;
+runs that predate the pin use the auto label. --stratify cohort requires
+structural features and cannot be combined with --cohort.
+
+--ablation refits after dropping each feature (the WL histogram is one
+group), reports stability and assignment change, and flags dominant
+features. Populations through 2,000 points are exact; larger populations
+use a deterministic 1,000-point HDBSCAN sample and radius assignment.
+
+Fleet convergence: --snapshot prints this instance's feature vectors as a
+fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;
+workflows become salted keys and goober names salted hashes. The instance
+ID and salt default to the fleet association (salt = fleet ID), so every
+instance in a fleet hashes alike. --fleet <dir> pools the *.json snapshots
+in dir and clusters distinct workflow shapes across instances: a shape
+cloned onto many instances counts once, only the most common feature
+version is clustered (others are listed as excluded), each instance is
+scored aligned/private/outlier, and clusters are tested for an instance
+confound.
+
+Reusable templates: --templates <evidence.json> reads a JSON array of
+joined child-proposal evidence (proposalId, proposalDigest, runId,
+parentRunId, repository, taskCohort, succeeded, findings, parameters) and
+--cluster-model a frozen structural model whose point IDs are those
+proposal IDs. It reports each stable cluster that clears the evidence bar
+(stability, parent-run and repository support, no policy or safety
+findings, outcomes no worse than comparable alternatives per task cohort,
+a parameterized medoid) as a review-required config change request for
+the child-authoring catalog, and lists why every other cluster was
+suppressed. Advisory only: nothing is written or registered.
 
 ### workflow show
 Usage: goobers workflow show [--dot] <name> [path]
@@ -3768,7 +3897,7 @@ kinds, and transition targets as a text DAG or Graphviz DOT
 (default path ".").
 
 ### workflow validate-child
-Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--cluster-model <model.json>] [--json] <proposal.yaml> [path]
 
 Validate one generated child Workflow against an opted-in parent stage in
 the instance's current active config/ tree (default path "."). The parent
@@ -3779,8 +3908,85 @@ This is advisory current-config validation, not durable run admission. It
 does not start or queue work, resolve credentials, invoke a model, or refresh
 workflowSource. --backend selects the validation target (default runner).
 Config digests identify declarative validation inputs, not an execution archive.
+--cluster-model (Labs) adds advisory novelty evidence against a frozen model
+from 'goobers workflow clusters --json'; it never changes validity or exit code.
 --json emits child-workflow-validation/v1 diagnostics and digests.
 Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
+
+### workflow-gym
+Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate|promotion-validate> <args>
+
+Validate or list a file-backed Workflow Gym benchmark dataset. The path
+may name one JSON/YAML task manifest or a directory of manifests. Replay
+runs one task against historical fixture and journal inputs, entirely offline.
+Tournament compares candidate result manifests over one identical task roster.
+Evaluate applies confidence and regression gates to tournament JSON output.
+Promotion-validate checks promotion evidence against Workflow CD policy without
+mutating production and emits an auditable validation receipt.
+
+### workflow-gym evaluate
+Usage: goobers workflow-gym evaluate [--min-samples N] [--regression-threshold RATE]
+       <dataset> <tournament-report>
+
+Evaluate paired tournament JSON with per-slice sample floors, 95% confidence
+intervals, a pass-rate regression threshold, and a Pareto leaderboard. Train
+and eval tasks determine the gate and ranking; holdout results are reported but
+never used for selection. Missing candidate results never count as measured
+evidence. The command writes a machine-readable JSON report to stdout.
+
+Options:
+  --min-samples N              Required samples in each selection slice (default 10)
+  --regression-threshold RATE  Tolerated pass-rate regression from 0 to 1 (default 0.05)
+
+Exit codes: 0 = pass, 1 = fail (regression meets the threshold), 2 = usage
+error, 3 = inconclusive (insufficient or missing evidence), 4 = input or
+processing error (unreadable or inconsistent dataset or tournament report).
+
+### workflow-gym list
+Usage: goobers workflow-gym list <path>
+
+Validate a Workflow Gym dataset, print its version, deterministic digest,
+and task count, then list tasks in stable task ID order.
+
+### workflow-gym promotion-validate
+Usage: goobers workflow-gym promotion-validate <evidence> <policy>
+
+Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current
+WorkflowGymPromotionPolicy. Each benchmark, shadow, or holdout slot names its
+stage, an evaluate JSON report path (relative to the evidence file), and that
+report's canonical artifactDigest; verdicts and samples come from the report.
+Validation is read-only and writes a WorkflowGymPromotionValidation receipt
+with verdict, reasons, and digests to stdout, on rejection as well as success.
+
+Exit codes: 0 = pass, 1 = fail (regressed, mismatched, stale, or reused
+evidence), 2 = usage error, 3 = inconclusive (missing required evidence or too
+few samples), 4 = input error (unreadable or malformed evidence, policy, or report).
+
+### workflow-gym replay
+Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>
+
+Replay one historical task twice through the offline benchmark harness and
+write its deterministic replay manifest as JSON. The replay reads the
+fixture's work item and re-issues the journal's recorded mutations through
+the side-effect sandbox; the manifest lists only effects the sandbox
+observed, as deterministic, virtualized, or unavailable.
+
+### workflow-gym tournament
+Usage: goobers workflow-gym tournament <dataset> <authoritative> <candidate> [candidate...]
+
+Compare authoritative and candidate EffectiveVersion/genome result manifests
+over exactly the same task IDs and write a deterministic paired report as JSON.
+Each WorkflowGymCandidate JSON/YAML manifest supplies datasetDigest (must match
+the loaded dataset), identity.effectiveVersion, identity.genomeDigest, and a
+non-empty list of task results with evaluatorVersion (must match the task),
+status, costUsd, durationMs, and failureClass. The authoritative manifest must
+cover every task; omitted candidate results are recorded as failures.
+
+### workflow-gym validate
+Usage: goobers workflow-gym validate <path>
+
+Validate a Workflow Gym dataset and print its version, deterministic
+digest, and task count.
 
 ### workspace
 Usage: goobers workspace reset <repo> [path]

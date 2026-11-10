@@ -443,7 +443,7 @@ func splitAndTrim(value, sep string) []string {
 // mutation requires from the pull request number the rest of the codebase
 // carries, and in the same round trip reads the two states that make the
 // enqueue a no-op: already merged, and already sitting in the queue.
-const enqueuePullRequestLookupQuery = `query($owner:String!,$name:String!,$number:Int!){
+const enqueuePullRequestLookupQuery = `query EnqueuePullRequestLookup($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       id
@@ -655,7 +655,7 @@ func (p *GitHubProvider) DequeuePullRequest(ctx context.Context, req DequeuePull
 // merge queue entry in one round trip. The entry is the only surface that
 // distinguishes "still queued" from "no longer queued" — REST exposes
 // nothing equivalent.
-const pollMergeQueueEntryQuery = `query($owner:String!,$name:String!,$number:Int!){
+const pollMergeQueueEntryQuery = `query PollMergeQueueEntry($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       id
@@ -814,9 +814,21 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return nil, err
 	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
+	endpoint, err := p.pullRequestListEndpoint(req, state, updatedSince)
 	if err != nil {
 		return nil, err
+	}
+	prs, err := p.fetchPullRequests(ctx, endpoint, req.Limit, updatedSince)
+	if err != nil {
+		return nil, err
+	}
+	return p.filterPullRequestSummaries(ctx, req, prs)
+}
+
+func (p *GitHubProvider) pullRequestListEndpoint(req ListPullRequestsRequest, state string, updatedSince time.Time) (string, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
+	if err != nil {
+		return "", err
 	}
 	values := url.Values{"state": []string{state}}
 	if req.Base != "" {
@@ -832,11 +844,12 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 			values.Set("page", strconv.Itoa(req.Page))
 		}
 	}
-	endpoint, err = addQuery(endpoint, values)
-	if err != nil {
-		return nil, err
-	}
+	return addQuery(endpoint, values)
+}
 
+func (p *GitHubProvider) fetchPullRequests(
+	ctx context.Context, endpoint string, limit int, updatedSince time.Time,
+) ([]githubPullRequestDetail, error) {
 	var prs []githubPullRequestDetail
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var pageOut []githubPullRequestDetail
@@ -844,7 +857,7 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 			return fmt.Errorf("decode pulls page: %w", err)
 		}
 		for _, pr := range pageOut {
-			if req.Limit > 0 && len(prs) >= req.Limit {
+			if limit > 0 && len(prs) >= limit {
 				return errStopPaging
 			}
 			if !updatedSince.IsZero() && pr.UpdatedAt.Before(updatedSince) {
@@ -859,14 +872,19 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 			}
 			prs = append(prs, pr)
 		}
-		if req.Limit > 0 && len(prs) >= req.Limit {
+		if limit > 0 && len(prs) >= limit {
 			return errStopPaging
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
+	return prs, nil
+}
 
+func (p *GitHubProvider) filterPullRequestSummaries(
+	ctx context.Context, req ListPullRequestsRequest, prs []githubPullRequestDetail,
+) ([]PullRequestSummary, error) {
 	out := make([]PullRequestSummary, 0, len(prs))
 	for _, pr := range prs {
 		if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
@@ -1156,7 +1174,7 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 		variables[variable] = ref
 	}
 	query := fmt.Sprintf(
-		"query($owner:String!,$name:String!%s){repository(owner:$owner,name:$name){%s}}",
+		"query RefCheckStates($owner:String!,$name:String!%s){repository(owner:$owner,name:$name){%s}}",
 		definitions.String(), fields.String(),
 	)
 	var response struct {

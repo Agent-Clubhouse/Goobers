@@ -11,7 +11,7 @@ func TestHealthPolicyFeatureIsIndependentOfWorkflowPin(t *testing.T) {
 	if !ok {
 		t.Fatal("health policy is absent from the feature registry")
 	}
-	for _, version := range []string{"2.0", "3.0"} {
+	for _, version := range []string{"2.0", "2.1", "3.0", "3.1"} {
 		features, err := FeaturesForGaggle(Definition{DSLVersion: version}, apiv1.GaggleSpec{
 			Health: &apiv1.GaggleHealthPolicy{},
 		})

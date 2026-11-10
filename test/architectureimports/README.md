@@ -6,6 +6,12 @@ asks `go list` for each accepted namespace's production and test graph in every
 configured build context, including every package below the namespace; it does
 not infer imports by searching source text.
 
+The gate also checks the production import closure of `cmd/goobers` and the
+local-only runner, scheduler, journal, read-model, and trigger packages.
+Postgres, cloud object-storage SDKs, and `internal/cloud/...` are forbidden in
+those closures so cloud implementation dependencies cannot leak into the local
+binary.
+
 Run the checked-in rules from the repository root:
 
 ```text

@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // The daemon publishes authenticated attempts; only the existing worker owns
@@ -156,11 +157,11 @@ func (p *parentStagePod) prepare(ctx context.Context, env apiv1.InvocationEnvelo
 func (p *parentStagePod) prepareSource(ctx context.Context, env apiv1.InvocationEnvelope, reader *journal.Reader, started journal.Event, snapshot *workerConfigSnapshot) (childpod.Request, dispatcher.PinnedPlacement, error) {
 	var request childpod.Request
 	var pin dispatcher.PinnedPlacement
-	machine, err := runner.PinnedWorkflowMachine(reader, p.identity)
+	machine, err := runsemantics.PinnedWorkflowMachine(reader, p.identity)
 	if err != nil {
 		return request, pin, err
 	}
-	pins, err := containedParentPlacements(p.service.config, snapshot.set, machine)
+	pins, err := containedParentPlacements(p.service.config, snapshot.Definitions, machine)
 	if err != nil {
 		return request, pin, err
 	}

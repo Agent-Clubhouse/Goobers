@@ -72,6 +72,7 @@ func (s *fakeSocket) Close(websocket.StatusCode, string) error {
 
 func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	store, publicKey := connectorTestStorage(t)
+	store.record.Association.Projections = []string{ProjectionLabsWorkflowFeatures}
 	store.record.Association.LastHeartbeatAt = time.Now().Add(-time.Hour)
 	challenge := Challenge{
 		Type:            "challenge",
@@ -109,7 +110,8 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for hello")
 	}
-	if hello.Type != "hello" || hello.ACL.PolicyVersion != ProtocolVersion || hello.GoobersVersion != "v1.2.3" {
+	if hello.Type != "hello" || hello.ACL.PolicyVersion != ProtocolVersion || hello.GoobersVersion != "v1.2.3" ||
+		len(hello.Projections) != 1 || hello.Projections[0] != ProjectionLabsWorkflowFeatures {
 		t.Fatalf("hello = %+v", hello)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -172,6 +174,25 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	}
 	if record.Association.HeartbeatSeconds != 30 {
 		t.Fatalf("heartbeat seconds = %d, want 30", record.Association.HeartbeatSeconds)
+	}
+	if record.Association.Projections != nil || len(record.Association.ActiveProjections()) != 0 {
+		t.Fatalf("projections after revoke = %v, active = %v",
+			record.Association.Projections, record.Association.ActiveProjections())
+	}
+}
+
+func TestRevokedAssociationHasNoActiveProjections(t *testing.T) {
+	association := Association{Projections: []string{ProjectionLabsWorkflowFeatures}}
+	if got := association.ActiveProjections(); len(got) != 1 || got[0] != ProjectionLabsWorkflowFeatures {
+		t.Fatalf("active projections = %v", got)
+	}
+	association.Revoked = true
+	association.RevokeReason = "operator removed registration"
+	if got := association.ActiveProjections(); got == nil || len(got) != 0 {
+		t.Fatalf("revoked active projections = %#v, want empty", got)
+	}
+	if !association.Revoked || association.RevokeReason != "operator removed registration" {
+		t.Fatalf("association = %+v", association)
 	}
 }
 
@@ -463,14 +484,32 @@ func TestConnectorBackoffResetsAfterSuccessfulConnection(t *testing.T) {
 }
 
 func TestConnectorDefaultBackoff(t *testing.T) {
-	c := &Connector{}
-	for attempt, base := range map[int]time.Duration{0: time.Second, 1: 2 * time.Second, 4: 16 * time.Second, 5: 30 * time.Second, 50: 30 * time.Second} {
-		for i := 0; i < 20; i++ {
-			got := c.backoff(attempt)
-			if got < base*3/4 || got > base*5/4 {
-				t.Fatalf("backoff(%d) = %s, want within 25%% of %s", attempt, got, base)
-			}
+	store, _ := connectorTestStorage(t)
+	c := NewConnector(store, "root", "dev")
+	c.Dial = func(context.Context, string, *websocket.DialOptions) (Socket, *http.Response, error) {
+		return nil, nil, errors.New("outage")
+	}
+	attempt := 0
+	c.Wait = func(_ context.Context, got time.Duration) error {
+		base := 30 * time.Second
+		if attempt < 5 {
+			base = time.Second << attempt
 		}
+		low, high := base*3/4, min(base*5/4, 30*time.Second)
+		if got < low || got > high {
+			t.Fatalf("backoff(%d) = %s, want [%s, %s]", attempt, got, low, high)
+		}
+		attempt++
+		if attempt == 66 {
+			return context.Canceled
+		}
+		return nil
+	}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 66 {
+		t.Fatalf("waits = %d, want 66", attempt)
 	}
 }
 

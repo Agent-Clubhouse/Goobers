@@ -450,6 +450,12 @@ type DeleteBranchResult struct {
 	Deleted bool `json:"deleted"`
 }
 
+// ErrBranchNotFound reports a branch delete that found no branch to remove.
+// A BranchDeleter returns DeleteBranchResult{Deleted: false} for it; callers
+// that carry only an error (the cloud provider writer) return this sentinel
+// so the absence is recorded as such rather than as a deletion.
+var ErrBranchNotFound = errors.New("branch not found")
+
 // BranchTipChangedError reports that a conditional branch deletion lost its
 // lease because the remote ref no longer points at the expected commit.
 type BranchTipChangedError struct {
@@ -1326,6 +1332,8 @@ func (r ListPullRequestsRequest) MatchesSummary(pr PullRequestSummary) (bool, er
 // per candidate. ListPullRequests returns open PRs; bounded terminal-PR queries
 // also populate State and Merged for consumers that need current sibling state.
 type PullRequestSummary struct {
+	// Mergeable is nil while the forge has not computed mergeability.
+	Mergeable          *bool    `json:"mergeable,omitempty"`
 	ID                 string   `json:"id"`
 	Number             int      `json:"number"`
 	URL                string   `json:"url"`
@@ -1353,8 +1361,12 @@ type PullRequestSummary struct {
 	// tell whether a candidate backlog issue already has an open PR, without
 	// a second round-trip per candidate (GitHub's list-pulls response
 	// already carries the body).
-	Body      string             `json:"body,omitempty"`
-	Integrity apiintegrity.Grade `json:"integrity,omitempty"`
+	Body string `json:"body,omitempty"`
+	// BodyIncomplete marks a list projection that may contain only a prefix.
+	// Consumers parsing the full description must read PR detail/references.
+	// ADO list descriptions are truncated; its detail and poll reads are full.
+	BodyIncomplete bool               `json:"bodyIncomplete,omitempty"`
+	Integrity      apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // ChangedFile is one file a pull request touches (issue #359's sibling-set

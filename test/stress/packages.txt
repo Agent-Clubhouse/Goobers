@@ -7,10 +7,10 @@
 #   count=N   repetitions per shard (1..20, default 20)
 #   shards=N  split the package's top-level tests into N balanced `-run`
 #             subsets, each repeated `count` times and scheduled as its own
-#             nightly job (default 1). The split is computed by enumerating
-#             the package's tests and assigning them round-robin, so it stays
-#             balanced as tests are added instead of drifting like a
-#             hand-maintained name prefix would.
+#             nightly job (default 1). The split enumerates every test and
+#             assigns the longest measured tests to the lightest shard.
+#             test/stress/weights.json records measurements and provenance;
+#             new tests use its documented two-second fallback weight.
 #   pass=D    REQUIRED. The reviewed wall-clock cost of one race-instrumented
 #             pass over the whole package, measured on a hosted runner.
 #   exclude=NAME[,NAME...]
@@ -21,8 +21,8 @@
 #             static/type-aware scan, a golden-file compare, anything with
 #             no goroutines to race — that a repeat count cannot make more
 #             informative but that a slow single pass can make a shard time
-#             out. Excluding happens before the round-robin split, so the
-#             remaining tests stay evenly balanced across shards.
+#             out. Excluding happens before weighted partitioning, so only
+#             enrolled tests contribute to the measured shard weights.
 #
 # `pass` is what keeps the enrollment honest: `test/stress` refuses a list
 # whose implied per-shard budget — count x pass / shards, plus the build
@@ -39,13 +39,15 @@
 # cmd/goobers is the largest and most concurrency-heavy package in the repo and
 # the dominant source of flake reports, so it must not sit at the token count=2
 # it was reduced to when its full twenty-repetition race suite stopped fitting
-# the per-package budget. A recent race pass over the whole package costs
-# 990-1370s (~16.5-22.8m) on a hosted runner (recalibrated from recent CI race
-# jobs, up from the 20m this entry previously declared), so at pass=23m
-# twenty repetitions split across thirty-two shards put each nightly job at
-# 20*23m/32 = 14m22.5s of test execution plus the 10m build reserve = 24.375m,
-# about 81% of its 30m timeout with ~5.6m of margin, while restoring the full
-# repetition count every other enrolled package gets. TestIntentionalJournal-
+# the per-package budget. pass=23m retains the earlier reviewed whole-package
+# hosted wall-time measurement (990-1370s); dividing it by the shard count is
+# only the enrollment estimate, not evidence of current per-shard headroom.
+# Count-balanced shards exceeded 30m in October, so weights.json now supplies
+# measured individual test costs for deterministic duration-based placement.
+# Summed per-test elapsed times may overestimate wall time when tests overlap;
+# they do not replace a whole-package wall measurement. Hosted stress on the
+# final layout remains the check that each shard fits the unchanged timeout.
+# All tests retain the full repetition count. TestIntentionalJournal-
 # AppendDiscardsUseObservableHelper is a type-aware static scan of every
 # tracked production Go file with no concurrency to exercise (added by
 # #5018); repeating it up to 20x under -race panicked one shard with

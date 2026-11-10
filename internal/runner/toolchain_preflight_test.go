@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,5 +131,97 @@ func TestStartProceedsWhenPreflightPasses(t *testing.T) {
 	}
 	if len(v.calls) != 1 || len(v.calls[0]) != 2 {
 		t.Fatalf("verifier calls = %v, want exactly one with the two declared caps", v.calls)
+	}
+}
+
+type checkoutVerifier struct {
+	fakeVerifier
+	dir string
+}
+
+func (v *checkoutVerifier) VerifyIn(_ context.Context, required []string, dir string) error {
+	v.dir = dir
+	data, err := os.ReadFile(filepath.Join(dir, "global.json"))
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(string(data), `"rollForward":"latestPatch"`) {
+		return errors.New("checkout SDK policy missing")
+	}
+	return nil
+}
+
+func TestStartProbesToolchainsInRepositoryCheckout(t *testing.T) {
+	v := &checkoutVerifier{}
+	r := newPreflightRunner(t, v, nil, map[string]stubTaskResult{
+		"run-preflight-checkout:implement": {status: apiv1.ResultSuccess, summary: "done"},
+	})
+	repo := newFixtureRepoWithFiles(t, map[string]string{
+		"global.json": `{"sdk":{"version":"8.0.404","rollForward":"latestPatch"}}`,
+	})
+	r.cfg.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return repo, nil }
+	res, err := preflightStart(t, r, "run-preflight-checkout", []string{"dotnet@8"})
+	if err != nil || res.Phase != journal.PhaseCompleted {
+		t.Fatalf("Start = %+v, %v", res, err)
+	}
+	if v.dir == "" || len(v.calls) != 0 {
+		t.Fatalf("repository probe not used: dir=%q host calls=%v", v.dir, v.calls)
+	}
+	if _, err := os.Stat(v.dir); !os.IsNotExist(err) {
+		t.Fatalf("preflight checkout was not released: %v", err)
+	}
+}
+
+func TestStartPinnedToolchainPreflightSelectsRequestedBranch(t *testing.T) {
+	repo := newFixtureRepoWithFiles(t, map[string]string{
+		"global.json": `{"sdk":{"version":"9.0.100","rollForward":"disable"}}`,
+	})
+	edit := t.TempDir()
+	runGit(t, "", "clone", repo, edit)
+	runGit(t, edit, "config", "user.email", "test@example.com")
+	runGit(t, edit, "config", "user.name", "test")
+	runGit(t, edit, "checkout", "-b", "sdk-eight")
+	if err := os.WriteFile(filepath.Join(edit, "global.json"), []byte(`{"sdk":{"version":"8.0.404","rollForward":"latestPatch"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, edit, "add", "global.json")
+	runGit(t, edit, "commit", "-m", "pin SDK eight")
+	runGit(t, edit, "push", "origin", "sdk-eight")
+	sha := gitOutput(t, edit, "rev-parse", "HEAD")
+	for _, tc := range []struct {
+		name, expectedSHA string
+		wantError         bool
+	}{
+		{name: "requested branch"},
+		{name: "expected revision", expectedSHA: sha},
+		{name: "unexpected revision", expectedSHA: strings.Repeat("0", 40), wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &checkoutVerifier{}
+			r := newPreflightRunner(t, v, nil, map[string]stubTaskResult{
+				"run-pinned-preflight:implement": {status: apiv1.ResultSuccess, summary: "done"},
+			})
+			r.cfg.PinnedWorkspace = true
+			r.cfg.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return repo, nil }
+			res, err := r.Start(context.Background(), StartInput{
+				RunID:                "run-pinned-preflight",
+				Machine:              taskReservedNextFixtureMachine(t, workflow.TerminalComplete),
+				Gaggle:               "acme-web",
+				Trigger:              journal.Trigger{Kind: journal.TriggerManual},
+				RepoRef:              apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+				WorkspaceBranch:      "sdk-eight",
+				WorkspaceBranchSHA:   tc.expectedSHA,
+				RequiredCapabilities: []string{"dotnet@8"},
+			})
+			if tc.wantError {
+				if err == nil || res.FailureStage != toolchainPreflightState || !strings.Contains(err.Error(), "expected") || v.dir != "" {
+					t.Fatalf("wrong revision was probed: phase=%s dir=%q error=%v", res.Phase, v.dir, err)
+				}
+				return
+			}
+			if err != nil || res.Phase != journal.PhaseCompleted {
+				t.Fatalf("requested branch SDK policy not used: phase=%s error=%v", res.Phase, err)
+			}
+		})
 	}
 }

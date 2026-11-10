@@ -1,0 +1,16 @@
+fixture: knowledge_rank (synthetic, model replay, prompt knowledge_relevance v1, recorded 2026-11-09T00:00:00Z)
+thresholds (drop chosen on 8 tune tasks): dropAtOrBelow=0.95 neededAtOrAbove=1.50
+report-split tasks=24 candidates=144 needed=48 score-errors=0
+
+[existing-order]
+  precision@1=37.5% (9/24)
+  precision@3=38.9% (28/72)
+  precision@5=31.7% (38/120)
+
+[model-rank]
+  precision@1=100.0% (24/24)
+  precision@3=67.6% (48/71)
+  precision@5=56.5% (48/85)
+  would-drop=59 needed-dropped=0
+
+graduation(shadow->enforce): ready=true: meets sample, false-drop and precision criteria

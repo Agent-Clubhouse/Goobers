@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "v1",
+  "provider": "github",
+  "repository": {
+    "owner": "acme",
+    "name": "web"
+  },
+  "issue": "7",
+  "exchanges": [
+    {
+      "name": "list-open-issues",
+      "method": "GET",
+      "path": "/repos/acme/web/issues?direction=asc\u0026page=1\u0026per_page=100\u0026sort=created\u0026state=open",
+      "response": {
+        "status": 200,
+        "body": [
+          {
+            "number": 7,
+            "title": "Fix the flaky login test",
+            "body": "The login test fails intermittently.",
+            "state": "open",
+            "html_url": "https://github.com/acme/web/issues/7",
+            "labels": [{"name": "bug"}]
+          }
+        ]
+      }
+    },
+    {
+      "name": "get-issue",
+      "method": "GET",
+      "path": "/repos/acme/web/issues/7",
+      "response": {
+        "status": 200,
+        "body": {
+          "number": 7,
+          "title": "Fix the flaky login test",
+          "body": "The login test fails intermittently.",
+          "state": "open",
+          "html_url": "https://github.com/acme/web/issues/7",
+          "labels": [{"name": "bug"}]
+        }
+      }
+    },
+    {
+      "name": "comment-on-issue",
+      "method": "POST",
+      "path": "/repos/acme/web/issues/7/comments",
+      "response": {
+        "status": 201,
+        "body": {
+          "id": 9001,
+          "body": "Benchmark agent analysis posted.",
+          "html_url": "https://github.com/acme/web/issues/7#issuecomment-9001"
+        }
+      }
+    }
+  ]
+}

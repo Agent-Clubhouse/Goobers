@@ -14,11 +14,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"golang.org/x/term"
 
 	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/platform/secfile"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const fleetHelp = `Usage: goobers fleet <join|status|leave> [flags] [path]
@@ -34,7 +38,7 @@ are stored outside the instance root so copying an instance does not clone its
 identity.
 `
 
-const fleetJoinHelp = `Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+const fleetJoinHelp = `Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [--projection <name>] [path]
 
 Experimental and superseded embedded Fleet connector. Discover and enroll an
 instance with a Fleet service. By default the one-time enrollment grant is read
@@ -46,12 +50,15 @@ When discovery advertises a local administrator principal, interactive use
 offers an explicit instance:read self-grant. Noninteractive use must choose
 --grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
 explicit opt-out or interactive confirmation.
+
+--projection grants a data projection to the Fleet association and may be
+repeated. Supported projections: labs.workflowFeatures.
 `
 
 const fleetStatusHelp = `Usage: goobers fleet status [--json] [path]
 
 Experimental and superseded embedded Fleet connector. Show the durable Fleet
-registration, connection, heartbeat, ACL version, and credential expiry state.
+registration, connection, heartbeat, projection, ACL version, and credential expiry state.
 Private key and bearer credential material are never printed.
 `
 
@@ -69,6 +76,21 @@ var (
 	fleetHTTPClient = &http.Client{Timeout: 15 * time.Second}
 	fleetStatusNow  = time.Now
 )
+
+// labsWorkflowFeaturesOptions wires the optional Labs workflow-feature route.
+// Fleet storage failures degrade only that route: it stays unconfigured, so the
+// API answers 503 labs_unavailable while the daemon or dashboard keeps serving.
+func labsWorkflowFeaturesOptions(root string, warnings io.Writer) []httpapi.HandlerOption {
+	storage, err := newFleetStorage()
+	if err == nil {
+		var source *workflowcluster.FleetSnapshotSource
+		if source, err = workflowcluster.NewFleetSnapshotSource(root, storage); err == nil {
+			return []httpapi.HandlerOption{httpapi.WithLabsWorkflowFeatures(source)}
+		}
+	}
+	_, _ = fmt.Fprintf(warnings, "warning: Labs workflow features unavailable: %v\n", err)
+	return nil
+}
 
 const minimumFleetStaleAfter = 30 * time.Second
 
@@ -93,6 +115,8 @@ func runFleetJoinWithInput(ctx context.Context, args []string, stdin io.Reader, 
 	tokenFile := fs.String("enrollment-token-file", "", "private file containing the one-time enrollment grant")
 	grantLocalAdmin := fs.Bool("grant-local-admin", false, "grant the discovered local administrator instance:read")
 	noGrantLocalAdmin := fs.Bool("no-grant-local-admin", false, "explicitly enroll with an empty ACL")
+	var projections repeatableFlag
+	fs.Var(&projections, "projection", "data projection to grant (repeatable; supported: labs.workflowFeatures)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -102,6 +126,10 @@ func runFleetJoinWithInput(ctx context.Context, args []string, stdin io.Reader, 
 	}
 	if *grantLocalAdmin && *noGrantLocalAdmin {
 		pf(stderr, "error: --grant-local-admin and --no-grant-local-admin cannot be combined\n")
+		return 2
+	}
+	if err := fleet.ValidateProjections(projections); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	root, ok := optionalRoot(fs)
@@ -146,7 +174,7 @@ func runFleetJoinWithInput(ctx context.Context, args []string, stdin io.Reader, 
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -155,6 +183,7 @@ func runFleetJoinWithInput(ctx context.Context, args []string, stdin io.Reader, 
 		InstanceRoot: root,
 		DisplayName:  filepath.Base(canonicalRoot),
 		ACL:          acl,
+		Projections:  projections,
 	})
 	if err != nil {
 		pf(stderr, "error: enroll instance: %v\n", err)
@@ -210,6 +239,7 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 		ConnectionEndpoint:     association.ConnectionEndpoint,
 		ProtocolVersion:        association.ProtocolVersion,
 		ACLVersion:             association.ACL.PolicyVersion,
+		Projections:            association.ActiveProjections(),
 		CredentialExpiresAt:    association.CredentialExpiresAt,
 		CredentialNonExpiring:  association.CredentialExpiresAt.IsZero(),
 		Revoked:                association.Revoked,
@@ -240,6 +270,11 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 	pln(stdout, "")
 	pf(stdout, "  heartbeat: %s\n", formatFleetTime(status.LastHeartbeatAt))
 	pf(stdout, "  ACL version: %s\n", status.ACLVersion)
+	projections := "none"
+	if len(status.Projections) > 0 {
+		projections = strings.Join(status.Projections, ", ")
+	}
+	pf(stdout, "  Projections: %s\n", projections)
 	if status.CredentialNonExpiring {
 		pln(stdout, "  credential expires: never (non-expiring development credential)")
 	} else {
@@ -298,6 +333,7 @@ type fleetStatusOutput struct {
 	ConnectionEndpoint     string    `json:"connectionEndpoint,omitempty"`
 	ProtocolVersion        string    `json:"protocolVersion,omitempty"`
 	ACLVersion             string    `json:"aclVersion,omitempty"`
+	Projections            []string  `json:"projections"`
 	CredentialExpiresAt    time.Time `json:"credentialExpiresAt,omitempty"`
 	CredentialNonExpiring  bool      `json:"credentialNonExpiring"`
 	Revoked                bool      `json:"revoked"`

@@ -44,12 +44,25 @@ func validateClaimObservation(expected ClaimEntry, observation ClaimVerification
 	return nil
 }
 
+// ValidateClaimVerification applies the file ledger's provider-observation
+// validation rules using the caller's authoritative clock.
+func ValidateClaimVerification(
+	expected ClaimEntry,
+	observation ClaimVerification,
+	now time.Time,
+) error {
+	if err := validateClaimObservation(expected, observation); err != nil {
+		return err
+	}
+	if observation.ObservedAt.After(now) {
+		return fmt.Errorf("%w: observation is in the future", ErrInvalidClaimVerification)
+	}
+	return nil
+}
+
 // RecordClaimVerification does not grant or extend a lease. Compare-and-swap
 // protects a replacement lease from a slow observation of its predecessor.
 func (l *ClaimLedger) RecordClaimVerification(expected ClaimEntry, observation ClaimVerification) (bool, error) {
-	if err := validateClaimObservation(expected, observation); err != nil {
-		return false, err
-	}
 	storageKey := expected.ItemID
 	if expected.Gaggle != "" || expected.Provider != "" {
 		var err error
@@ -61,8 +74,8 @@ func (l *ClaimLedger) RecordClaimVerification(expected ClaimEntry, observation C
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	if observation.ObservedAt.After(now) {
-		return false, fmt.Errorf("%w: observation is in the future", ErrInvalidClaimVerification)
+	if err := ValidateClaimVerification(expected, observation, now); err != nil {
+		return false, err
 	}
 	current, ok := l.entries[storageKey]
 	if !ok || current.RunID != expected.RunID || !current.ClaimedAt.Equal(expected.ClaimedAt) || current.expired(now) || current.ReleasedAt != nil {

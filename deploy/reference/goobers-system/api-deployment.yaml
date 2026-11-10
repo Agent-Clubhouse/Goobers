@@ -12,6 +12,10 @@ spec:
   # Disabled until an adopter configures TLS, pod authentication, and exclusive
   # instance ownership. See ../README.md: Mode-3 authority and storage prerequisites.
   replicas: 0
+  # This singleton holds the lock-bearing RWO instance root. Its replacement
+  # cannot start until the old pod releases both the process lock and volume.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: goobers-api
@@ -22,6 +26,12 @@ spec:
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: goobers-api
+      # This disabled cloud reference assumes stages are remote-dispatched.
+      # `goobers up` lets an active local fallback reach its next boundary for
+      # at most 60s, then parks it for startup recovery. The extra 60s covers
+      # checkpoint and HTTP shutdown. Do not copy this bound to a local
+      # self-executing daemon, whose default drain remains unbounded.
+      terminationGracePeriodSeconds: 120
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
@@ -36,7 +46,7 @@ spec:
           image: goobers # rewritten by your overlay's images: transformer (#3287)
           # CHANGE-ME: configure the listener/authentication and separate the worker
           # instance root before enabling this sole journal-owning daemon.
-          args: ["up", "/var/lib/goobers"]
+          args: ["up", "--drain-timeout", "60s", "/var/lib/goobers"]
           ports:
             - name: http
               containerPort: 8080 # CHANGE-ME to the configured listener port
@@ -122,6 +132,8 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
+            # A liveness-triggered kill must not inherit the long pod drain.
+            terminationGracePeriodSeconds: 15
           volumeMounts:
             # Same instance-root layout as the worker. This lock-bearing RWO
             # volume must remain single-node mounted.
@@ -131,12 +143,10 @@ spec:
             # stage spans from internal/instance/instance.go's BlobStoreDir()
             # — <instance-root>/blobstore, i.e. /var/lib/goobers/blobstore —
             # which is NOT part of the journal PVC above. Mounting the SAME
-            # blobs PVC the worker's --blob-store already writes to
-            # (worker-deployment.yaml) here, nested inside the instance root,
-            # makes both sides resolve to the same underlying bytes without
-            # changing the journal PVC's RWO access mode: this mountPath and
-            # the worker's /var/lib/goobers-blobs mountPath are two different
-            # paths onto the SAME PVC root. Without this mount a
+            # blobs PVC behind the API's HTTP blob plane here, nested inside
+            # the instance root, makes daemon adoption and worker transfers
+            # resolve to the same underlying bytes without workers mounting
+            # shared storage. Without this mount a
             # worker-executed stage's span is written correctly but the
             # daemon can never read it, and reports span_unavailable forever.
             - name: blobs
@@ -161,9 +171,7 @@ spec:
         - name: journal
           persistentVolumeClaim:
             claimName: goobers-journal
-        # Same PVC the worker mounts as /var/lib/goobers-blobs (#3839) — see
-        # the blobs volumeMount comment above for why this must be the same
-        # claim, not a second one.
+        # API-owned backing store for the worker/stage HTTP blob plane (#3839).
         - name: blobs
           persistentVolumeClaim:
             claimName: goobers-blobs

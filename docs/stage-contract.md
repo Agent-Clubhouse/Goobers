@@ -2,12 +2,31 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha11` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha13` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
 deterministic command or an agentic harness invocation. Gates are a machine
 state whose evaluators run with stage-execution semantics.
+
+`InvocationEnvelope.dslVersion` carries the workflow definition’s pinned DSL contract.
+It is optional only for legacy envelopes. Executors stamp `GOOBERS_DSL_VERSION`
+from this field, overriding ambient values and rejecting authored environment
+overrides. `pr-comment-watch` refuses a missing or unknown stage version before
+provider mutations. Standalone calls without stage context keep the guarded
+default. Explicit DSL 2.0 keeps label-only routing; 2.1 and 3.x require the
+comment-backed shared-identity routing budget. Feedback acknowledgement and
+explicitly requested landing disarm remain unchanged.
+
+Recovery compatibility: a local interrupted run reconstructs new invocations
+from its verified pinned workflow definition. An already-scheduled Temporal
+activity may instead retain an older invocation payload without `dslVersion`.
+The watcher refuses that payload before provider writes. Retrying the activity
+or restarting its worker does not add the missing field; it requires a fresh
+invocation dispatched by an upgraded runner from the pinned definition. This
+change does not provide an operator command to rewrite or repair historical
+activity payloads, and it never guesses the version from stage inputs or the
+current daemon environment.
 
 Three JSON envelopes carry everything, defined in Go (`api/v1alpha1/envelope.go`,
 `artifact.go`) and mirrored by closed JSON Schemas (`api/schemas/*.schema.json`):

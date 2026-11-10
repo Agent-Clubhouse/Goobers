@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.1"
+metadata:
+  name: kind-child-failover
+  annotations: {goobers.dev/allow-preview-features: "true"}
+spec:
+  gaggle: reference
+  triggers: [{type: schedule, schedule: "* * * * *"}]
+  readiness: {maxConcurrentRuns: 1, maxRunsPerHour: 1}
+  start: parent
+  tasks:
+    - name: parent
+      type: agentic
+      workspace: scratch
+      goober: child-parent
+      goal: KIND_CHILD_FAILOVER
+      capabilities: [agent:model]
+      timeoutSeconds: 600
+      childWorkflows:
+        allowedGoobers: [child-parent]
+        allowedCapabilities: []

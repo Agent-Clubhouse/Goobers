@@ -48,6 +48,9 @@ const (
 	// V2DSLVersion is the copy-forward language version with its own
 	// interpreter and semantics.
 	V2DSLVersion = "2.0"
+	// V21DSLVersion opts into durable comment-watcher routing budgets and
+	// their explicit comment permission, preserving the DSL 2.0 surface.
+	V21DSLVersion = "2.1"
 	// V3DSLVersion is the Goobernetes language version (dsl-3.0.md): the
 	// runsOn/runners/repoFrom surface. PREVIEW while the Goobernetes v1 waves
 	// land — DVL010/DVL011 gate it behind the instance preview opt-in; GA is a
@@ -178,6 +181,12 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
 		},
 	},
+	V21DSLVersion: {
+		Level: LevelPreview,
+		History: []SupportTransition{
+			{Level: LevelPreview, SinceVersion: "v0.6.0"},
+		},
+	},
 	// DSL 3.0 enters at PREVIEW (dsl-3.0.md §8, issue #3505): the interpreter
 	// ships and is fully exercisable behind the instance preview opt-in
 	// (DVL010/DVL011), while the version-level GA is a later lock ceremony —
@@ -242,21 +251,26 @@ func (m SupportMatrix) Versions() []Version {
 	return versions
 }
 
-// NewestSupported returns the newest DSL version the matrix declares
-// LevelSupported, using Versions()'s numeric major/minor order. Callers that
-// must pick a version for an object with no pin of its own (a workflow-less
-// gaggle or goober, #3297) derive it from here rather than from
-// V1DSLVersion: the transitional default is deprecated, and resolving an
-// unpinned object there would fail validation the moment it turns unsupported
-// — with no dslVersion field on those specs for the author to act on. ok is
-// false when no version is currently LevelSupported, a state
-// ValidateSupportPolicy never produces but one a caller must not paper over
-// with a guess.
+// NewestSupported returns the newest LevelSupported DSL in numeric version
+// order. Authoring uses this forward path; workflow-less compatibility probes
+// use OldestSupported instead. Both return false if no supported version exists.
 func (m SupportMatrix) NewestSupported() (version string, ok bool) {
 	versions := m.Versions()
 	for i := len(versions) - 1; i >= 0; i-- {
 		if versions[i].Level == LevelSupported {
 			return versions[i].Version, true
+		}
+	}
+	return "", false
+}
+
+// OldestSupported returns the oldest LevelSupported DSL in numeric version
+// order. Unversioned objects with no workflows retain this compatibility
+// baseline across graduation of newer versions. Deprecated versions are skipped.
+func (m SupportMatrix) OldestSupported() (version string, ok bool) {
+	for _, entry := range m.Versions() {
+		if entry.Level == LevelSupported {
+			return entry.Version, true
 		}
 	}
 	return "", false
@@ -369,7 +383,7 @@ type Platform struct {
 // mirrors the `go` directive in go.mod (the language version the module targets);
 // TestMinGoVersionMatchesGoMod guards the two against drift so the declared
 // surface can never quietly diverge from what the module actually compiles with.
-const minGoVersion = "1.26.9"
+const minGoVersion = "1.26.10"
 
 // platforms is the declared OS/arch support matrix. Linux and macOS are release
 // gates (primary CI + the self-host runner + developer machines); Windows is

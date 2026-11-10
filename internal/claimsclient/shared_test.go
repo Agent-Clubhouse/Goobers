@@ -53,7 +53,7 @@ func TestSharedRetryRegistrationFailurePreventsRemoteTransition(t *testing.T) {
 	callbackCalls := 0
 	resolver := &sharedClientResolver{binding: SharedClaimBinding{Store: store, RemoteKey: "42", Owner: sharedclaim.Owner{Instance: "instance", Run: "run", Token: "token"},
 		BeforeTransition: func(context.Context) error { return failure }, AfterTransition: func(context.Context) { callbackCalls++ }}}
-	file, err := NewFile(FileConfig{LedgerPath: filepath.Join(t.TempDir(), "claims.json"), Shared: resolver})
+	file, err := NewFile(sharedTestFileConfig(filepath.Join(t.TempDir(), "claims.json"), resolver))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestSharedVisibilityHookRunsAfterTransitionsIncludingLostACK(t *testing.T) 
 		}
 		observations = append(observations, observed.Record.Owner)
 	}
-	file, err := NewFile(FileConfig{LedgerPath: filepath.Join(t.TempDir(), "claims.json"), Shared: resolver})
+	file, err := NewFile(sharedTestFileConfig(filepath.Join(t.TempDir(), "claims.json"), resolver))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestFileSharedClaimAdmissionSurvivesLostACKAndRestart(t *testing.T) {
 	key := Key{Gaggle: "g", Provider: "github", ExternalID: "42"}
 	open := func(shared SharedClaimResolver) *File {
 		t.Helper()
-		file, err := NewFile(FileConfig{LedgerPath: path, Shared: shared})
+		file, err := NewFile(sharedTestFileConfig(path, shared))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,11 +130,11 @@ func TestFileSharedClaimAdmissionSurvivesLostACKAndRestart(t *testing.T) {
 		t.Fatal("uncertain provider acknowledgment admitted local work")
 	}
 	entries, err := file.ForRunAll(t.Context(), "run")
-	if err != nil || len(entries) != 0 {
+	if err != nil || len(entries) != 1 || !entries[0].SharedAdmissionPending || entries[0].ExpiresAt.After(time.Now()) {
 		t.Fatalf("local fallback after failed admission: %+v %v", entries, err)
 	}
 	store.loseACK = false
-	if err := file.Locked(t.Context(), "test-shared", func(held Ledger) error {
+	if err := Sequence(t.Context(), file, "test-shared", func(held Ledger) error {
 		ok, _, err := held.ClaimScoped(t.Context(), key, "run", "implement", time.Minute)
 		if err == nil && !ok {
 			return errors.New("same-owner reconciliation refused")
@@ -164,7 +164,7 @@ func TestFileSharedClaimAdmissionSurvivesLostACKAndRestart(t *testing.T) {
 func TestFileSharedClaimRefusesWrongOwnerAndResolverFailure(t *testing.T) {
 	store := &sharedClientStore{}
 	resolver := &sharedClientResolver{binding: SharedClaimBinding{Store: store, RemoteKey: "repo/42", Owner: sharedclaim.Owner{Instance: "instance", Run: "other", Token: "token"}}}
-	file, err := NewFile(FileConfig{LedgerPath: filepath.Join(t.TempDir(), "claims.json"), Shared: resolver})
+	file, err := NewFile(sharedTestFileConfig(filepath.Join(t.TempDir(), "claims.json"), resolver))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestSeparateFileLedgersShareOneAdmissionConstraint(t *testing.T) {
 		keys[i] = Key{Gaggle: fmt.Sprintf("gaggle-%d", i), Provider: "github", ExternalID: "42"}
 		resolver := &sharedClientResolver{binding: SharedClaimBinding{Store: store, RemoteKey: "repo/42",
 			Owner: sharedclaim.Owner{Instance: fmt.Sprintf("instance-%d", i), Run: "run", Token: fmt.Sprintf("token-%d", i)}}}
-		file, err := NewFile(FileConfig{LedgerPath: filepath.Join(t.TempDir(), "claims.json"), Shared: resolver})
+		file, err := NewFile(sharedTestFileConfig(filepath.Join(t.TempDir(), "claims.json"), resolver))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,11 +237,19 @@ func TestSeparateFileLedgersShareOneAdmissionConstraint(t *testing.T) {
 			if len(entries) != 1 || entries[0].SharedDeadline.IsZero() {
 				t.Fatal("winner lacks durable shared admission")
 			}
-		} else if len(entries) != 0 {
-			t.Fatal("loser fell back to a local-only lease")
+		} else if len(entries) != 1 || !entries[0].SharedAdmissionPending || entries[0].ExpiresAt.After(time.Now()) {
+			t.Fatal("loser lacks nonexecuting cleanup custody")
 		}
 	}
 	if winners != 1 {
 		t.Fatalf("admitted instances = %d, want exactly one", winners)
+	}
+}
+
+func sharedTestFileConfig(path string, resolver SharedClaimResolver) FileConfig {
+	var claimsMu, transitionMu sync.Mutex
+	return FileConfig{LedgerPath: path, Shared: resolver,
+		Lock:                func(_ string, fn func() error) error { claimsMu.Lock(); defer claimsMu.Unlock(); return fn() },
+		ProviderReleaseLock: func(_ Key, fn func() error) error { transitionMu.Lock(); defer transitionMu.Unlock(); return fn() },
 	}
 }

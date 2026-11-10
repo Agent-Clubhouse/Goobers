@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -143,9 +144,9 @@ func TestValidateContinuationTargetUsesHistoricalSourceDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reconstructed, err := PinnedWorkflowMachine(reader, identity)
+	reconstructed, err := runsemantics.PinnedWorkflowMachine(reader, identity)
 	if err != nil {
-		t.Fatalf("PinnedWorkflowMachine: %v", err)
+		t.Fatalf("runsemantics.PinnedWorkflowMachine: %v", err)
 	}
 	if err := ValidateContinuationTarget(reconstructed, candidate, "infra"); err == nil {
 		t.Fatal("incompatible historical continuation was admitted")
@@ -350,7 +351,7 @@ func TestResumeContinuationKeepsLocalRetryBudgetsAcrossCrash(t *testing.T) {
 				if err := source.Append(journal.Event{
 					Type: journal.EventError, Stage: "finish", Attempt: attempt,
 					Error:  &journal.ErrorDetail{Code: "executor_error", Message: "historical failure"},
-					Runner: map[string]any{retryFailureClassKey: string(class)},
+					Runner: map[string]any{runsemantics.RetryFailureClassKey: string(class)},
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -386,13 +387,13 @@ func TestResumeContinuationKeepsLocalRetryBudgetsAcrossCrash(t *testing.T) {
 				{
 					Type: journal.EventError, Stage: "finish", Attempt: 1,
 					Error:  &journal.ErrorDetail{Code: "executor_error", Message: "policy failure"},
-					Runner: map[string]any{retryFailureClassKey: string(journal.AttemptPolicy)},
+					Runner: map[string]any{runsemantics.RetryFailureClassKey: string(journal.AttemptPolicy)},
 				},
 				{Type: journal.EventStageStarted, Stage: "finish", Attempt: 2, AttemptClass: journal.AttemptPolicy},
 				{
 					Type: journal.EventError, Stage: "finish", Attempt: 2,
 					Error:  &journal.ErrorDetail{Code: "executor_error", Message: "infrastructure failure"},
-					Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+					Runner: map[string]any{runsemantics.RetryFailureClassKey: string(journal.AttemptInfra)},
 				},
 				{Type: journal.EventStageStarted, Stage: "finish", Attempt: 3, AttemptClass: journal.AttemptInfra},
 			} {

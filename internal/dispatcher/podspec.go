@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -40,6 +41,9 @@ const (
 	LabelAttempt = "goobers.dev/attempt"
 	// LabelPodAttempt is the optional physical dispatch ordinal across visits.
 	LabelPodAttempt = "goobers.dev/pod-attempt"
+	// LabelFanOutVisit and LabelFanOutBranch scope one branch occurrence.
+	LabelFanOutVisit  = "goobers.dev/fanout-visit"
+	LabelFanOutBranch = "goobers.dev/fanout-branch"
 	// LabelInstance scopes orphan reconciliation to one durable Goobers
 	// instance even when several instances share Kubernetes namespaces.
 	LabelInstance = "goobers.dev/instance"
@@ -189,6 +193,11 @@ const (
 	EnvDaemonAPI = "GOOBERS_DAEMON_API"
 	// EnvPodToken carries the per-run podauth bearer.
 	EnvPodToken = "GOOBERS_POD_TOKEN"
+	// EnvChildWorkflowAccess carries an engine parent stage's child-workflow
+	// grant as JSON ({endpoint, bearerToken}), bound by control for exactly
+	// this attempt (#8085 b). Only the in-pod harness launcher reads it, into
+	// the child-workflow tool's private config; the stage never sees it.
+	EnvChildWorkflowAccess = "GOOBERS_CHILD_WORKFLOW_ACCESS"
 	// EnvStageCommand carries the stage's DeterministicRun.Command as a JSON
 	// array, when set — the in-pod dispatch-exec entrypoint's argv (#3699).
 	EnvStageCommand = "GOOBERS_STAGE_COMMAND"
@@ -198,6 +207,8 @@ const (
 	// EnvArtifactPublication carries runner-authored named-output authority.
 	// It is privileged and never inherited by the stage command.
 	EnvArtifactPublication = "GOOBERS_ARTIFACT_PUBLICATION"
+	// EnvStageOutbox carries the runner-owned declared outbox path list.
+	EnvStageOutbox = "GOOBERS_STAGE_OUTBOX"
 	// EnvStageTimeout carries the stage's effective timeout (Go duration
 	// string) so dispatch-exec bounds the command the same way the local
 	// executor bounds it, independent of the pod's activeDeadlineSeconds
@@ -374,9 +385,9 @@ var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivileged
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
 	EnvChildExecutionDigest,
-	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
+	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken, EnvChildWorkflowAccess,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
-	EnvArtifactPublication,
+	EnvArtifactPublication, EnvStageOutbox,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
 	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
@@ -445,7 +456,7 @@ var DispatcherPlaneEnv = []string{
 var runContextEnv = []string{
 	executorRepoProviderEnv, executorRepoBaseURLEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
 	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
-	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
+	executorTriggerRefEnv, executorDSLVersionEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
 }
 
 // The executor package owns these names; they are restated rather than imported
@@ -461,6 +472,7 @@ const (
 	executorBranchNamespaceEnv    = "GOOBERS_BRANCH_NAMESPACE"
 	executorBaseBranchEnv         = "GOOBERS_BASE_BRANCH"
 	executorTriggerRefEnv         = "GOOBERS_TRIGGER_REF"
+	executorDSLVersionEnv         = "GOOBERS_DSL_VERSION"
 	executorNeedsHumanAssigneeEnv = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
 	// executorStageTimeoutEnv restates executor.StageTimeoutEnvVar: the
 	// deadline dispatch-exec enforces, stamped for goobers-CLI stages so a
@@ -641,6 +653,20 @@ func (e *WindowsIdentityError) Error() string {
 // new pod" holds by construction and a redelivered create of the SAME attempt
 // collides with its own pod instead of silently making a second one.
 func PodName(attempt Attempt) string {
+	if attempt.FanOutVisit > 0 && attempt.FanOutBranch > 0 {
+		suffix := fmt.Sprintf("-v%s-b%d-a%d",
+			strconv.FormatUint(attempt.FanOutVisit, 36),
+			attempt.FanOutBranch,
+			attempt.IdentityAttempt(),
+		)
+		const prefix = "gbn-"
+		budget := 63 - len(prefix) - len(suffix) - 1
+		stageBudget := max(1, min(16, budget/2))
+		runBudget := max(1, budget-stageBudget)
+		stage := sanitizeNameSegment(attempt.Stage, stageBudget)
+		run := sanitizeNameSegment(attempt.RunID, runBudget)
+		return prefix + stage + "-" + run + suffix
+	}
 	stage := sanitizeNameSegment(attempt.Stage, 20)
 	run := sanitizeNameSegment(attempt.RunID, 24)
 	return fmt.Sprintf("gbn-%s-%s-a%d", stage, run, attempt.IdentityAttempt())
@@ -811,6 +837,8 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 
 	labels := copyStringMap(template.Labels)
 	delete(labels, LabelPodAttempt)
+	delete(labels, LabelFanOutVisit)
+	delete(labels, LabelFanOutBranch)
 	for key, value := range attempt.ExtraLabels {
 		labels[key] = value
 	}
@@ -987,7 +1015,7 @@ var controlEnvReference = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
 // against a control-plane bearer stamped earlier in the environment.
 func refuseControlEnvOverrides(attempt Attempt) error {
 	for _, name := range sortedKeys(attempt.Env) {
-		if slices.Contains(DispatcherControlEnv, name) {
+		if strings.EqualFold(name, executorDSLVersionEnv) || slices.Contains(DispatcherControlEnv, name) {
 			return &ControlEnvOverrideError{Key: name}
 		}
 		for _, match := range controlEnvReference.FindAllStringSubmatch(attempt.Env[name], -1) {
@@ -1098,6 +1126,10 @@ func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]st
 	if attempt.PodAttempt > 0 {
 		labels[LabelPodAttempt] = fmt.Sprint(attempt.PodAttempt)
 	}
+	if attempt.FanOutVisit > 0 && attempt.FanOutBranch > 0 {
+		labels[LabelFanOutVisit] = fmt.Sprint(attempt.FanOutVisit)
+		labels[LabelFanOutBranch] = fmt.Sprint(attempt.FanOutBranch)
+	}
 	// Absent owner stamps nothing rather than an "unknown" placeholder; owner
 	// is provenance, while LabelInstance is the sweep's stable safety scope.
 	if owner := cfg.ownerLabel(); owner != "" {
@@ -1202,6 +1234,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		{Name: EnvPodAttempt, Value: attempt.podAttemptEnv()},
 		// Explicit empty also shadows a template's EnvFrom for legacy stages.
 		{Name: EnvArtifactPublication, Value: literalPodEnv(artifactPublicationEnv(attempt))},
+		{Name: EnvStageOutbox, Value: literalPodEnv(stageOutboxEnv(attempt))},
 	}
 
 	if cfg.BlobEndpoint != "" {
@@ -1212,6 +1245,9 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	}
 	if attempt.PodToken != "" {
 		env = append(env, corev1.EnvVar{Name: EnvPodToken, Value: literalPodEnv(attempt.PodToken)})
+	}
+	if attempt.ChildWorkflowAccess != "" {
+		env = append(env, corev1.EnvVar{Name: EnvChildWorkflowAccess, Value: literalPodEnv(attempt.ChildWorkflowAccess)})
 	}
 	env = append(env, planeEnv(cfg, attempt)...)
 	env = append(env, agenticMergeJournalEnv(cfg, attempt)...)
@@ -1243,6 +1279,8 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	for _, key := range sortedKeys(attempt.RunContext) {
 		env = append(env, corev1.EnvVar{Name: key, Value: literalPodEnv(attempt.RunContext[key])})
 	}
+	// Always shadow image/EnvFrom values, including for legacy attempts.
+	env = append(env, corev1.EnvVar{Name: executorDSLVersionEnv, Value: literalPodEnv(attempt.DSLVersion)})
 	if attempt.CLIStage {
 		env = append(env, corev1.EnvVar{Name: EnvStageIsCLI, Value: "true"})
 		// The routed repository's configured bot login, resolved here because

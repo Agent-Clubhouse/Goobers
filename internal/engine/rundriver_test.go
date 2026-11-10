@@ -9,13 +9,16 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 // TestEngineRunPinsEngineDriverInRunYAML walks the pinning path the daemon
-// actually reads — newRunJournal -> JournalProjection.Identity -> ProjectRun
+// actually reads — newRunJournal -> JournalProjection.Identity -> livejournal.Writer
 // -> run.yaml — and asserts the file names its driver.
 //
 // run.yaml is the far side that matters. cmd/goobers' resume scan, stall
@@ -38,9 +41,9 @@ func TestEngineRunPinsEngineDriverInRunYAML(t *testing.T) {
 		t.Fatalf("projection identity Driver = %q, want %q", proj.Identity.Driver, journal.DriverEngine)
 	}
 
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	reader, err := journal.OpenRead(dir)
 	if err != nil {
@@ -142,9 +145,9 @@ func TestEngineRunPinsGateGooberCapabilitiesForTheDaemonToReadBack(t *testing.T)
 		Det:        &scriptedStages{},
 		Workspaces: testWorkspaces(t),
 	}, false)
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	reader, err := journal.OpenRead(dir)
 	if err != nil {
@@ -209,5 +212,57 @@ func TestLiveJournalRunPinsGateGooberCapabilities(t *testing.T) {
 	}
 	if got := pinned["reviewer"]; len(got) != 2 || got[0] != "repo:read" || got[1] != "model:invoke" {
 		t.Fatalf("live-pinned reviewer capabilities = %v, want [repo:read model:invoke]", got)
+	}
+}
+
+func TestLiveJournalRunKeepsPinnedWorkflowLabelCohort(t *testing.T) {
+	root := t.TempDir()
+	runsDir := instance.NewLayout(root).ForGaggle("web").RunsDir()
+	writer, err := livejournal.NewWriter(func(gaggle string) (string, bool) {
+		return runsDir, gaggle == "web"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(writer.Close)
+
+	base := projectionInput("cohort", crSpec("implement",
+		[]apiv1.Task{crTask("implement", "")}, nil))
+	base.LiveJournal = true
+	base.GooberDigest = "sha256:goober"
+	plain := base
+	plain.RunID = "run-cloud-plain"
+	labeled := base
+	labeled.RunID = "run-cloud-labeled"
+	labeled.WorkflowLabels = map[string]string{"goobers.dev/task-class": "review"}
+
+	plainProjection := executeLive(t, plain, &Activities{
+		Det: &scriptedStages{}, Workspaces: testWorkspaces(t), Journal: writer,
+	}, false)
+	labeledProjection := executeLive(t, labeled, &Activities{
+		Det: &scriptedStages{}, Workspaces: testWorkspaces(t), Journal: writer,
+	}, false)
+	if plainProjection.Identity.WorkflowDigest != labeledProjection.Identity.WorkflowDigest {
+		t.Fatalf("labels changed workflow digest: %s != %s",
+			labeledProjection.Identity.WorkflowDigest, plainProjection.Identity.WorkflowDigest)
+	}
+
+	scan, err := workflowcluster.ScanBehavior(root, workflowcluster.BehaviorScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptors := map[string]workflowcluster.BehaviorDescriptor{}
+	for _, descriptor := range scan.Descriptors {
+		descriptors[descriptor.RunID] = descriptor
+	}
+	if descriptors[plain.RunID].TaskCohort == "" || !strings.HasPrefix(descriptors[plain.RunID].TaskCohort, "auto:") {
+		t.Fatalf("plain cloud cohort = %q, want auto cohort", descriptors[plain.RunID].TaskCohort)
+	}
+	if descriptors[labeled.RunID].TaskCohort != "review" {
+		t.Fatalf("labeled cloud cohort = %q, want review", descriptors[labeled.RunID].TaskCohort)
+	}
+	if descriptors[labeled.RunID].EffectiveVersion != descriptors[plain.RunID].EffectiveVersion {
+		t.Fatalf("labels changed EffectiveVersion: %s != %s",
+			descriptors[labeled.RunID].EffectiveVersion, descriptors[plain.RunID].EffectiveVersion)
 	}
 }

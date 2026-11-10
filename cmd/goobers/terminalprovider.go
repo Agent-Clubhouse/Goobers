@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/instance"
@@ -29,7 +31,7 @@ func terminalRepositoryRefForProject(cfg *instance.Config, project apiv1.RepoRef
 	}
 	repo := cfg.Repos[0]
 	if project.Owner != "" && project.Name != "" {
-		if configured, ok := configuredRepoForProject(cfg, project); ok {
+		if configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, project); ok {
 			repo = configured
 		} else {
 			provider := providers.ProviderKind(project.Provider)
@@ -63,7 +65,7 @@ func terminalConfiguredRepo(cfg *instance.Config, project apiv1.RepoRef) (instan
 	if project.Owner == "" || project.Name == "" {
 		return cfg.Repos[0], nil
 	}
-	if repo, ok := configuredRepoForProject(cfg, project); ok {
+	if repo, ok := runtimewiring.ConfiguredRepoForProject(cfg, project); ok {
 		return repo, nil
 	}
 	return instance.RepoRef{}, fmt.Errorf("terminal project repository %s/%s is not configured", project.Owner, project.Name)

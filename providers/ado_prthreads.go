@@ -476,6 +476,7 @@ func (p *ADOProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, pu
 		RequestedReviewers: poll.RequestedReviewers,
 		State:              poll.State,
 		Merged:             poll.Merged,
+		Mergeable:          poll.Mergeable,
 		Head:               poll.HeadBranch,
 		Base:               poll.BaseBranch,
 		HeadSHA:            poll.HeadSHA,

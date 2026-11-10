@@ -30,6 +30,24 @@ describe("recorded child activity", () => {
     expect(screen.queryByText(/This run is waiting/)).not.toBeInTheDocument();
   });
 
+  it("shows pinned advisory novelty and its model version", () => {
+    render(<ChildActivityPanel activity={{
+      status: "recorded", parked: false, waits: [],
+      parent: {
+        runId: "parent-run", workflow: "Implementation", stageOccurrence: "plan/branch0/visit1",
+        novelty: {
+          scored: true, nearest: "c2", distance: 0.42, outOfDistribution: true,
+          modelVersion: "workflowcluster.model/v1",
+          historicalOutcome: { runCount: 41, successRate: 0.94, insufficientRuns: false },
+          humanApprovalRequired: true,
+        },
+      },
+    }} navigate={vi.fn()} />);
+    expect(screen.getByText(/Advisory novelty: novel shape; nearest c2 at distance 0.42/)).toHaveTextContent("Model workflowcluster.model/v1");
+    expect(screen.getByText(/Advisory novelty:/)).toHaveTextContent("94% success across 41 runs");
+    expect(screen.getByText(/Advisory novelty:/)).toHaveTextContent("Human approval required");
+  });
+
   it("shows unavailable evidence without presenting stale links", () => {
     render(<ChildActivityPanel activity={{ ...waiting, status: "unavailable" }} navigate={vi.fn()} />);
     expect(screen.getByRole("status")).toHaveTextContent("Recorded child relationships are unavailable");

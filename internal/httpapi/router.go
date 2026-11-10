@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -175,6 +176,14 @@ const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
 
 // WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
 const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
+
+// WorkerChildAdmissionPrincipalIssuer can only call the engine child-admission
+// plane. The grant is instance-wide: it is not bound to a run or child.
+const WorkerChildAdmissionPrincipalIssuer = "goobers/worker-child-admission"
+
+// WorkerTerminalInterventionPrincipalIssuer is reserved for the trusted
+// workflow host's keyed terminal transition, never ordinary pod journal emits.
+const WorkerTerminalInterventionPrincipalIssuer = "goobers/worker-terminal-intervention"
 
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
 // (Goobers#6120). Such a principal holds no roles and no pod scopes: the
@@ -400,8 +409,41 @@ func telemetryPlanePath(path string) bool {
 	}
 }
 
+// authorizeIssuerBoundRoute decides routes that exactly one issuer may call,
+// before any role or scope rule runs. handled is false for every other route.
+func authorizeIssuerBoundRoute(request *http.Request, principal Principal) (handled bool, err error) {
+	switch {
+	case terminalInterventionPath(request.URL.Path):
+		if principal.Issuer != WorkerTerminalInterventionPrincipalIssuer {
+			return true, errors.New("terminal journal intervention requires a dedicated worker credential")
+		}
+		return false, nil
+	case engineChildPlanePath(request.URL.Path):
+		// Defence in depth: no role, scope or other issuer reaches the engine
+		// child-admission plane, whatever later rules would grant.
+		if principal.Issuer != WorkerChildAdmissionPrincipalIssuer {
+			return true, errors.New("only the engine worker child-admission credential may call the child-admission plane")
+		}
+		return false, nil
+	case request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath:
+		if principal.Issuer == WorkerPrincipalIssuer {
+			return true, nil
+		}
+		return true, errors.New("only an authenticated worker may report config divergence")
+	case request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigSnapshotPath:
+		if principal.Issuer == WorkerPrincipalIssuer {
+			return true, nil
+		}
+		return true, errors.New("only an authenticated worker may fetch configuration")
+	default:
+		return false, nil
+	}
+}
+
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
-// view or stronger and every other method for operate or stronger. Requests
+// view or stronger and every other method for operate or stronger. The Labs
+// Fluid UI customization routes are the one exception: their writes change
+// only the caller's own presentation, so view suffices (#8415). Requests
 // without an authenticated principal are denied, so this authorizer must be
 // paired with a real Authenticator — under NullAuthenticator every request
 // stays anonymous and would be refused.
@@ -422,7 +464,7 @@ func telemetryPlanePath(path string) bool {
 // convention.
 //
 // Resident worker principals use a separate identity and may only GET the
-// config digest or POST their own divergence report. Dedicated blob-worker
+// config digest/snapshot or POST their own divergence report. Dedicated blob-worker
 // principals may only GET/PUT blobs; surrender-worker principals may only
 // read surrender results and presence. Pod scopes and roles broaden none.
 func RequireRoles() Authorizer {
@@ -431,11 +473,8 @@ func RequireRoles() Authorizer {
 		if !ok {
 			return errors.New("no authenticated principal")
 		}
-		if request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath {
-			if principal.Issuer == WorkerPrincipalIssuer {
-				return nil
-			}
-			return errors.New("only an authenticated worker may report config divergence")
+		if handled, err := authorizeIssuerBoundRoute(request, principal); handled {
+			return err
 		}
 		if principal.Issuer == WorkflowParentPrincipalIssuer {
 			return authorizeWorkflowParent(request, principal)
@@ -469,17 +508,18 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("a credential-refresh grant may only call the credential refresh route")
 		}
-		if principal.Issuer == WorkerSurrenderPrincipalIssuer {
-			return authorizeWorkerSurrender(request)
+		if authorize, ok := workerPlaneAuthorizers[principal.Issuer]; ok {
+			return authorize(request)
 		}
 		if principal.Issuer == WorkerBlobPrincipalIssuer {
 			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == WorkerPrincipalIssuer {
-			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
+			if request.Method == http.MethodGet &&
+				(request.URL.Path == apicontract.ConfigDigestPath || request.URL.Path == apicontract.ConfigSnapshotPath) {
 				return nil
 			}
-			return errors.New("worker principal may only read config digest or report config divergence")
+			return errors.New("worker principal may only read config state or report config divergence")
 		}
 		if request.Method == http.MethodPost && operatorMessagePlanePath(request.URL.Path) {
 			return nil
@@ -495,7 +535,7 @@ func RequireRoles() Authorizer {
 			return nil
 		}
 		required := RoleView
-		if request.Method != http.MethodGet && request.Method != http.MethodHead || recoveryPlanePath(request.URL.Path) {
+		if request.Method != http.MethodGet && request.Method != http.MethodHead && !labsFluidUIPath(request.URL.Path) || recoveryPlanePath(request.URL.Path) {
 			required = RoleOperate
 		}
 		if !principal.HasRole(required) {
@@ -634,6 +674,9 @@ type Router struct {
 	// letting a handler run against subsystems recovery has not finished
 	// opening yet.
 	recoveryGate func() bool
+	// recoveryExempt names the routes served whatever recoveryGate reports,
+	// beyond the contract's RecoverySafe ones (WithLeaseFreeBlobPlane).
+	recoveryExempt map[apicontract.RouteID]bool
 	// recoveryHints, when set, decorates the recovery gate's 503 with the
 	// daemon's startup hints (#6895).
 	recoveryHints func(http.Header)
@@ -651,12 +694,18 @@ func (r *Router) ensureAdmission() {
 type handlerConfig struct {
 	events                    eventSource
 	authenticator             Authenticator
+	authenticatorSet          bool
 	interventions             InterventionService
 	interventionContext       context.Context
 	runRevealer               func(context.Context, string) error
 	workflowMutations         WorkflowMutationService
 	gaggleBundles             GaggleBundleService
 	gaggleHealth              GaggleHealthService
+	labsWorkflowClusters      LabsWorkflowClusterService
+	labsWorkflowFeatures      LabsWorkflowFeaturesService
+	labsFluidUI               LabsFluidUIService
+	labsFluidUIRequests       LabsFluidUIRequestService
+	runContentPrivacy         runContentPrivacy
 	claims                    ClaimService
 	generatedChildExecution   ChildExecutionObserver
 	workflowParentExecution   ChildExecutionObserver
@@ -664,6 +713,9 @@ type handlerConfig struct {
 	escalations               EscalationService
 	cancels                   CancelService
 	journal                   JournalService
+	engineChildren            EngineChildPlane
+	engineChildAuthority      EngineChildAuthority
+	engineChildProtocol       EngineChildProtocol
 	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService
@@ -684,10 +736,12 @@ type handlerConfig struct {
 	telemetryDefects          TelemetryDefectAggregateService
 	podRunGaggle              func(context.Context, string) (string, error)
 	configDigest              func() string
+	configSnapshots           ConfigSnapshotService
 	workerConfigDivergence    func(journal.Event) error
 	instanceReadiness         InstanceReadinessService
 	portalAssets              http.Handler
 	recoveryGate              func() bool
+	leaseFreeBlobPlane        bool
 	recoveryHints             func(http.Header)
 	discoveryIdentity         DiscoveryIdentity
 	telemetryReadsAvailable   bool
@@ -730,7 +784,8 @@ func WithTrustedProxies(proxies []string) HandlerOption {
 }
 
 // WithChangeFeedStream registers the SSE endpoint backed by the read model's
-// change feed (#1929).
+// change feed (#1929). The feed must be store.ChangeFeed(): a second feed would
+// wait on a different notifier and lose the store's commit wakeups.
 //
 // The only SSE source (#1929). It tails rows the projector wrote in the same
 // transaction as the facts they describe, so it is ordered, durable, and
@@ -738,20 +793,32 @@ func WithTrustedProxies(proxies []string) HandlerOption {
 //
 // A topology with no read model registers no stream at all rather than falling
 // back to a second detector; the freshness surface reports that as degraded.
-func WithChangeFeedStream(store *readmodel.Store) HandlerOption {
+func WithChangeFeedStream(store readmodel.Backend, feed readmodel.Feed) HandlerOption {
 	return func(h *handlerConfig) error {
-		h.events = newFeedStream(store)
+		if store == nil || feed == nil {
+			return errors.New("http API change feed backend and feed are required")
+		}
+		if !reflect.TypeOf(feed).Comparable() || feed != store.ChangeFeed() {
+			return errors.New("http API change feed must be the backend's singleton feed")
+		}
+		h.events = newFeedStream(store, feed)
 		return nil
 	}
 }
 
-// WithAuthenticator replaces the tier-1 NullAuthenticator.
+// WithAuthenticator replaces the tier-1 NullAuthenticator. It may be given at
+// most once: a second authenticator is refused rather than silently replacing
+// the first (#8199).
 func WithAuthenticator(authenticator Authenticator) HandlerOption {
 	return func(config *handlerConfig) error {
 		if authenticator == nil {
 			return errors.New("http API authenticator is required")
 		}
+		if config.authenticatorSet {
+			return errors.New("http API authenticator is already set")
+		}
 		config.authenticator = authenticator
+		config.authenticatorSet = true
 		return nil
 	}
 }
@@ -835,6 +902,20 @@ func WithPortalAssetHandler(handler http.Handler) HandlerOption {
 			return errors.New("http API portal asset handler is required")
 		}
 		c.portalAssets = handler
+		return nil
+	}
+}
+
+// WithLeaseFreeBlobPlane serves the blob plane's GET and PUT whatever the
+// recovery gate reports, and only those two routes (#8188). A cloud control
+// replica's gate is closed while it does not hold the controller lease, but
+// blobs are content-addressed, digest-verified and serialized with GC by
+// their own per-digest storage lease, so a standby (or a replica mid
+// takeover) can serve them safely, and must: gating them on leadership would
+// stall every running stage's artifact I/O across a failover.
+func WithLeaseFreeBlobPlane() HandlerOption {
+	return func(c *handlerConfig) error {
+		c.leaseFreeBlobPlane = true
 		return nil
 	}
 }
@@ -1095,7 +1176,7 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 	// matters here is that a request against a still-recovering daemon never
 	// reaches a handler whose subsystems have not opened yet, regardless of
 	// whether it would otherwise have authenticated.
-	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryGate() {
+	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryExempt[route.ID] && !r.recoveryGate() {
 		w.Header().Set(HeaderRetryAfterSeconds, strconv.Itoa(NotReadyRetryAfterSeconds))
 		if r.recoveryHints != nil {
 			r.recoveryHints(w.Header())
@@ -1198,6 +1279,9 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, err
 	}
 	router.recoveryGate = config.recoveryGate
+	if config.leaseFreeBlobPlane {
+		router.recoveryExempt = map[apicontract.RouteID]bool{apicontract.RouteBlobGet: true, apicontract.RouteBlobPut: true}
+	}
 	router.recoveryHints = config.recoveryHints
 	router.budgetLog = errorLog
 	discovery, err := registerDiscoveryRoutes(router, config)
@@ -1238,6 +1322,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 
 func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig, discovery *discoveryState) {
 	registerInstanceReadinessRoute(router, config.instanceReadiness, errorLog, discovery)
+	registerConfigSnapshotRoute(router, config.configSnapshots)
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
@@ -1332,17 +1417,24 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		config.portalAssets.ServeHTTP(w, request)
 	})
-	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
+	privacy := runPrivacy{service: config.runContentPrivacy, reader: reader, errorLog: errorLog}
+	registerTelemetryRoutes(router, reader, privacy, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
-	registerRunRoutes(router, reader, errorLog)
+	registerRunRoutes(router, reader, privacy, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerGaggleHealthRoute(router, config.gaggleHealth, errorLog)
+	registerLabsWorkflowClustersRoute(router, config.labsWorkflowClusters, errorLog)
+	registerLabsWorkflowFeaturesRoute(router, config.labsWorkflowFeatures, errorLog)
+	registerLabsFluidUIRoutes(router, config.labsFluidUI, errorLog)
+	registerLabsFluidUIRequestRoutes(router, config.labsFluidUIRequests, config.triggers, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)
 	registerGaggleBundleRoutes(router, config.gaggleBundles, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
+	registerTerminalInterventionRoute(router, config, errorLog)
+	registerEngineChildPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, config.workflowParentBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{
@@ -1426,7 +1518,7 @@ func registerRunRevealRoute(router *Router, reveal func(context.Context, string)
 	})
 }
 
-func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+func registerRunRoutes(router *Router, reader readservice.Reader, privacy runPrivacy, errorLog *log.Logger) {
 	registerChildHistoryRoute(router, reader, errorLog)
 	router.Handle(apicontract.RouteRuns, func(w http.ResponseWriter, request *http.Request) {
 		options, err := runListOptions(request)
@@ -1439,14 +1531,31 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "list runs", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, runs)
+		privacy.private(w)
+		writeJSON(w, http.StatusOK, withholdRunList(request, privacy, runs))
 	})
 	router.Handle(apicontract.RouteRunDetail, func(w http.ResponseWriter, request *http.Request) {
-		run, err := reader.GetRun(request.Context(), request.PathValue("run"))
+		var run readservice.RunDetail
+		var err error
+		if after := request.URL.Query().Get("continuationsAfter"); after != "" {
+			if paged, ok := reader.(interface {
+				GetRunWithContinuations(context.Context, string, string) (readservice.RunDetail, error)
+			}); ok {
+				run, err = paged.GetRunWithContinuations(request.Context(), request.PathValue("run"), after)
+			} else {
+				err = fmt.Errorf("%w: continuation pagination unavailable", readservice.ErrInvalidArgument)
+			}
+		} else {
+			run, err = reader.GetRun(request.Context(), request.PathValue("run"))
+		}
 		if err != nil {
 			writeReadError(w, errorLog, "get run", err)
 			return
 		}
+		if !privacy.allowed(request, run.ID, run.Workflow) {
+			run = withholdRunDetail(run)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, run)
 	})
 	router.Handle(apicontract.RouteRunEvents, func(w http.ResponseWriter, request *http.Request) {
@@ -1459,6 +1568,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read run events", err)
 			return
 		}
+		if !privacy.allowed(request, run, "") {
+			events = withholdEvents(events)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, events)
 	})
 	router.Handle(apicontract.RouteStageAttempts, func(w http.ResponseWriter, request *http.Request) {
@@ -1475,6 +1588,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read stage attempts", err)
 			return
 		}
+		if !privacy.allowed(request, run, "") {
+			attempts = withholdAttempts(attempts)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, attempts)
 	})
 	router.Handle(apicontract.RouteRunArtifact, func(w http.ResponseWriter, request *http.Request) {
@@ -1491,6 +1608,11 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read artifact", err)
 			return
 		}
+		privacy.private(w)
+		if !privacy.allowed(request, run, "") {
+			writeRunContentPrivate(w)
+			return
+		}
 		w.Header().Set("Content-Type", artifact.Metadata.MediaType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
 		w.Header().Set("ETag", `"`+artifact.Metadata.Digest+`"`)
@@ -1505,13 +1627,19 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read transcript", fmt.Errorf("%w: invalid transcript sequence", readservice.ErrInvalidArgument))
 			return
 		}
+		run := request.PathValue("run")
 		transcript, err := reader.Transcript(
 			request.Context(),
-			request.PathValue("run"),
+			run,
 			seq,
 		)
 		if err != nil {
 			writeReadError(w, errorLog, "read transcript", err)
+			return
+		}
+		privacy.private(w)
+		if !privacy.allowed(request, run, "") {
+			writeRunContentPrivate(w)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -1621,6 +1749,8 @@ func writeReadError(w http.ResponseWriter, errorLog *log.Logger, operation strin
 		writeError(w, http.StatusConflict, "artifact_invalid", "artifact integrity verification failed")
 	case errors.Is(err, readservice.ErrTelemetryUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "telemetry_unavailable", "telemetry is not enabled")
+	case errors.Is(err, readservice.ErrUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "read_unavailable", "this data is not available from this API")
 	default:
 		errorLog.Printf("%s failed: %v", operation, err)
 		writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")

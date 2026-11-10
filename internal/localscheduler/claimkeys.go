@@ -21,6 +21,12 @@ const (
 	// MergeLockItemIDPrefix namespaces merge-pr's per-repository merge window:
 	// "merge-lock/<owner>/<repo>".
 	MergeLockItemIDPrefix = "merge-lock/"
+	// PublicationLockItemIDPrefix reserves fixed-duration publication custody.
+	// These leases outlive run cleanup and are never renewed or reclaimed by
+	// generic lifecycle paths; only verified release or expiry ends custody.
+	PublicationLockItemIDPrefix = "publication-lock/"
+	// PublicationLockReleaseCode marks an explicitly verified custody release.
+	PublicationLockReleaseCode = "verdict_publication_closed"
 )
 
 var ledgerOnlyItemIDPrefixes = [...]string{
@@ -28,6 +34,7 @@ var ledgerOnlyItemIDPrefixes = [...]string{
 	AdvisoryPRItemIDPrefix,
 	DecompositionTargetItemIDPrefix,
 	MergeLockItemIDPrefix,
+	PublicationLockItemIDPrefix,
 }
 
 // IsWorkItemClaimKey reports whether a claim's external ID names a provider
@@ -42,4 +49,23 @@ func IsWorkItemClaimKey(id string) bool {
 		}
 	}
 	return true
+}
+
+// IsPublicationClaimKey identifies fixed-duration custody, including the
+// earlier nested encoding. The legacy shape has provider/owner/repo after
+// its prefix; an ordinary merge lock owned by an org named publication does not.
+func IsPublicationClaimKey(id string) bool {
+	if strings.HasPrefix(id, PublicationLockItemIDPrefix) {
+		return true
+	}
+	legacy, ok := strings.CutPrefix(id, MergeLockItemIDPrefix+"publication/")
+	return ok && strings.Count(legacy, "/") >= 2
+}
+
+// IsPublicationClaim classifies both scoped and older item-only records.
+func (e ClaimEntry) IsPublicationClaim() bool {
+	if e.ExternalID != "" {
+		return IsPublicationClaimKey(e.ExternalID)
+	}
+	return IsPublicationClaimKey(e.ItemID)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -20,7 +21,7 @@ import (
 // eviction's inventory read is: one unreadable entry must not hide the rest,
 // and an entry nothing can interpret is never a promotion candidate anyway.
 func readConfiguredRecoveryOverflow(ctx context.Context, layout instance.Layout) ([]recovery.InventoryEntry, []recovery.UnreadableEntry, error) {
-	return recovery.ReadOverflow(ctx, recoveryOverflowRoot(layout))
+	return recovery.ReadOverflow(ctx, runtimewiring.RecoveryOverflowRoot(layout))
 }
 
 // recoveryOverflowCount reports how many entries sit at the ref tier, and
@@ -64,7 +65,7 @@ func promoteRecoveryOverflow(ctx context.Context, layout instance.Layout, setup 
 	if len(entries) == 0 {
 		return failures
 	}
-	policy, _ := resolveRecoveryPolicy(layout, setup.Config)
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(layout, setup.Config)
 	free, err := recoveryInventoryFreeSlots(ctx, layout, policy)
 	if err != nil {
 		return errors.Join(failures, err)
@@ -105,7 +106,7 @@ func recoveryInventoryFreeSlots(ctx context.Context, layout instance.Layout, pol
 	limit := policy.MaxSnapshotsEffective()
 	entries, unreadable, err := recovery.ReadInventoryTolerant(ctx, filepath.Join(layout.Root, "recovery"), recovery.MaxInventoryEntries)
 	if err != nil {
-		return 0, recoveryInventoryReadError(err, limit)
+		return 0, runtimewiring.RecoveryInventoryReadError(err, limit)
 	}
 	return limit - len(entries) - len(unreadable), nil
 }
@@ -120,12 +121,12 @@ func recoveryInventoryFreeSlots(ctx context.Context, layout instance.Layout, pol
 // neither shorten nor lengthen its retention.
 func promoteRecoveryOverflowEntry(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, policy instance.RecoverySnapshotConfig, entry recovery.InventoryEntry) (bool, error) {
 	record := entry.Record
-	url, err := recoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
+	url, err := runtimewiring.RecoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
 	if err != nil {
 		return false, err
 	}
 	root := filepath.Join(layout.Root, "recovery")
-	overflowRoot := recoveryOverflowRoot(layout)
+	overflowRoot := runtimewiring.RecoveryOverflowRoot(layout)
 	promoted := false
 	visit := func(repositories []string) error {
 		repository, err := recovery.OverflowSource(ctx, repositories, record)
@@ -206,7 +207,7 @@ func importRecoveryObjects(ctx context.Context, layout instance.Layout, cfg *ins
 	if !overflow {
 		return recovery.ImportSnapshotBundle(ctx, destination, filepath.Join(filepath.Dir(recordPath), recovery.BundleFileName), record, maxBytes)
 	}
-	url, err := recoveryRetentionCloneURL(cfg, record.RepositoryKey)
+	url, err := runtimewiring.RecoveryRetentionCloneURL(cfg, record.RepositoryKey)
 	if err != nil {
 		return err
 	}
@@ -247,7 +248,7 @@ func retireExpiredRecoveryOverflow(ctx context.Context, layout instance.Layout, 
 	if err != nil || len(entries) == 0 {
 		return err
 	}
-	policy, _ := resolveRecoveryPolicy(layout, setup.Config)
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(layout, setup.Config)
 	retainWindow, err := policy.RetainWindowEffective()
 	if err != nil {
 		return err
@@ -290,11 +291,11 @@ func retireOverflowEntry(ctx context.Context, layout instance.Layout, setup *sch
 // decision has retired, unpinning the ref in every managed copy first. It is
 // the overflow tier's equivalent of retireSnapshotEverywhere.
 func retireOverflowRecord(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, record recovery.Record) error {
-	url, err := recoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
+	url, err := runtimewiring.RecoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
 	if err != nil {
 		return err
 	}
-	overflowRoot := recoveryOverflowRoot(layout)
+	overflowRoot := runtimewiring.RecoveryOverflowRoot(layout)
 	visit := func(repositories []string) error {
 		return recovery.RetireOverflow(ctx, overflowRoot, record, repositories)
 	}

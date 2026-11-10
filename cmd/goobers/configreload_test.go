@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/executor"
@@ -22,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -353,7 +356,7 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 		if health.DefinitionReload == nil || health.DefinitionReload.State != "rejected" {
 			return readservice.DefinitionReloadStatus{}, false
 		}
-		digest, err := configDirectoryDigest(layout.ConfigDir())
+		digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 		if err != nil {
 			return readservice.DefinitionReloadStatus{}, false
 		}
@@ -382,7 +385,7 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 		t.Fatalf("repeat apply: code=%d stderr=%q", code, stderr)
 	}
 	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloadRejected, 2)
-	if digest, err := configDirectoryDigest(layout.ConfigDir()); err != nil || digest != status.AppliedDigest {
+	if digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir()); err != nil || digest != status.AppliedDigest {
 		t.Fatalf("repeat rejection left unapplied tree: digest=%s err=%v want=%s", digest, err, status.AppliedDigest)
 	}
 
@@ -761,10 +764,10 @@ spec:
 	writeFixture(t, skillPath, "# Original implementation skill\n")
 
 	fixtureRepo := newDaemonFixtureRepo(t)
-	previousRepoCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
-	previousAdapter := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+	previousRepoCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
+	previousAdapter := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
@@ -773,8 +776,8 @@ spec:
 		}}
 	}
 	t.Cleanup(func() {
-		repoCloneURL = previousRepoCloneURL
-		newAgenticAdapter = previousAdapter
+		runtimewiring.RepoCloneURL = previousRepoCloneURL
+		runtimewiring.NewAgenticAdapter = previousAdapter
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1054,7 +1057,7 @@ spec:
 	if err := os.WriteFile(skillPath, []byte("# Original skill\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	baseline, err := configDirectoryDigest(root)
+	baseline, err := runtimewiring.ConfigDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1081,7 +1084,7 @@ spec:
 			t.Fatal(err)
 		}
 	}
-	if got, err := configDirectoryDigest(root); err != nil {
+	if got, err := runtimewiring.ConfigDirectoryDigest(root); err != nil {
 		t.Fatal(err)
 	} else if got != baseline {
 		t.Fatalf("non-config churn changed digest: got %s, want %s", got, baseline)
@@ -1090,7 +1093,7 @@ spec:
 	if err := os.WriteFile(instructionsPath, []byte("# Updated instructions\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withInstructions, err := configDirectoryDigest(root)
+	withInstructions, err := runtimewiring.ConfigDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1101,7 +1104,7 @@ spec:
 	if err := os.WriteFile(skillPath, []byte("# Updated skill\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withSkill, err := configDirectoryDigest(root)
+	withSkill, err := runtimewiring.ConfigDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1115,7 +1118,7 @@ spec:
 	if err := os.WriteFile(referencePath, []byte("Handle the retry case.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withSkillReference, err := configDirectoryDigest(root)
+	withSkillReference, err := runtimewiring.ConfigDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1129,7 +1132,7 @@ spec:
 	if err := os.WriteFile(scopedSkillPath, []byte("# Gaggle skill\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withScopedSkill, err := configDirectoryDigest(root)
+	withScopedSkill, err := runtimewiring.ConfigDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1139,7 +1142,7 @@ spec:
 	if err := os.WriteFile(skillPath, []byte("# Ignored shared update\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := configDirectoryDigest(root); err != nil {
+	if got, err := runtimewiring.ConfigDirectoryDigest(root); err != nil {
 		t.Fatal(err)
 	} else if got != withScopedSkill {
 		t.Fatalf("shadowed shared skill changed digest: got %s, want %s", got, withScopedSkill)
@@ -1151,7 +1154,7 @@ spec:
 	if err := os.WriteFile(undeclaredSkillPath, []byte("cases:\n  - ignored\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := configDirectoryDigest(root); err != nil {
+	if got, err := runtimewiring.ConfigDirectoryDigest(root); err != nil {
 		t.Fatal(err)
 	} else if got != withScopedSkill {
 		t.Fatalf("undeclared gaggle skill changed digest: got %s, want %s", got, withScopedSkill)
@@ -1160,7 +1163,7 @@ spec:
 	if err := os.WriteFile(scopedSupportPath, []byte("cases:\n  - retry\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withScopedSupport, err := configDirectoryDigest(root)
+	withScopedSupport, err := runtimewiring.ConfigDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1175,7 +1178,7 @@ spec:
 	if err := os.WriteFile(asset, []byte("static reference"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withAsset, err := configDirectoryDigest(root)
+	withAsset, err := runtimewiring.ConfigDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1187,7 +1190,7 @@ spec:
 	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("kind: B\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := configDirectoryDigest(root); err != nil {
+	if got, err := runtimewiring.ConfigDirectoryDigest(root); err != nil {
 		t.Fatal(err)
 	} else if got == withAsset {
 		t.Fatalf("config edit did not change digest: %s", got)
@@ -1210,7 +1213,7 @@ spec:
 	if err := os.WriteFile(instructionsPath, []byte("# Original instructions\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	baseline, err := configDirectoryDigest(root)
+	baseline, err := runtimewiring.ConfigDirectoryDigest(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1218,7 +1221,7 @@ spec:
 	if err := os.WriteFile(instructionsPath, []byte("# Updated instructions\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := configDirectoryDigest(root); err != nil {
+	if got, err := runtimewiring.ConfigDirectoryDigest(root); err != nil {
 		t.Fatal(err)
 	} else if got == baseline {
 		t.Fatalf("parent-relative instruction edit did not change digest: %s", got)
@@ -1255,7 +1258,7 @@ func TestConfigDirectoryDigestRejectsUnsafeAssets(t *testing.T) {
 				t.Fatal(err)
 			}
 			setup(t, assets)
-			if _, err := configDirectoryDigest(root); err == nil {
+			if _, err := runtimewiring.ConfigDirectoryDigest(root); err == nil {
 				t.Fatal("configDirectoryDigest accepted unsafe assets")
 			}
 		})
@@ -1274,7 +1277,7 @@ func TestConfigDirectoryDigestSkipsVanishedFileWithoutError(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "gone.yaml"), filepath.Join(root, "pending.yaml")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	if _, err := configDirectoryDigest(root); err != nil {
+	if _, err := runtimewiring.ConfigDirectoryDigest(root); err != nil {
 		t.Fatalf("vanished config file surfaced as error: %v", err)
 	}
 }

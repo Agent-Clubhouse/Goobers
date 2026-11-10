@@ -52,6 +52,45 @@ type ChildWorkflowValidationResponse struct {
 	PolicyDigest    string                    `json:"policyDigest,omitempty"`
 	WorkflowDigest  string                    `json:"workflowDigest,omitempty"`
 	Diagnostics     []ChildWorkflowDiagnostic `json:"diagnostics"`
+	// Novelty is present for a valid proposal when a cluster model is
+	// configured, including an unscored result when the model is unusable.
+	Novelty *ChildWorkflowNovelty `json:"novelty,omitempty"`
+}
+
+// ChildWorkflowNovelty is bounded advisory cluster evidence. It grants no
+// authority; HumanApprovalRequired reports only the configured policy outcome.
+type ChildWorkflowNovelty struct {
+	Scored                bool                            `json:"scored"`
+	Reason                string                          `json:"reason,omitempty"`
+	ModelID               string                          `json:"modelId,omitempty"`
+	ModelVersion          string                          `json:"modelVersion,omitempty"`
+	FeatureVersion        string                          `json:"featureVersion,omitempty"`
+	ClusterID             string                          `json:"clusterId,omitempty"`
+	Nearest               string                          `json:"nearest,omitempty"`
+	NearestMedoid         string                          `json:"nearestMedoid,omitempty"`
+	NearestSize           int                             `json:"nearestSize,omitempty"`
+	NearestStable         bool                            `json:"nearestStable,omitempty"`
+	Distance              float64                         `json:"distance"`
+	OutOfDistribution     bool                            `json:"outOfDistribution"`
+	HistoricalOutcome     *ChildWorkflowHistoricalOutcome `json:"historicalOutcome,omitempty"`
+	HumanApprovalRequired bool                            `json:"humanApprovalRequired,omitempty"`
+	Summary               string                          `json:"summary"`
+}
+
+// ChildWorkflowHistoricalOutcome is the admission-time cluster outcome snapshot.
+type ChildWorkflowHistoricalOutcome struct {
+	RunCount         int     `json:"runCount"`
+	SuccessRate      float64 `json:"successRate"`
+	InsufficientRuns bool    `json:"insufficientRuns"`
+}
+
+// ChildWorkflowAdmission is the durable human-review hold of a queued child.
+// A pending child is retained but not dispatched until an operator decides.
+type ChildWorkflowAdmission struct {
+	State       string     `json:"state"`
+	Reason      string     `json:"reason"`
+	RequestedAt time.Time  `json:"requestedAt"`
+	DecidedAt   *time.Time `json:"decidedAt,omitempty"`
 }
 
 // ChildWorkflowResponse reports durable custody, not a claim that execution began.
@@ -76,6 +115,8 @@ type ChildWorkflowResponse struct {
 	AcceptedAt            time.Time                        `json:"acceptedAt"`
 	UpdatedAt             time.Time                        `json:"updatedAt"`
 	Disposition           *ChildWorkflowResolutionResponse `json:"disposition,omitempty"`
+	Novelty               *ChildWorkflowNovelty            `json:"novelty,omitempty"`
+	Admission             *ChildWorkflowAdmission          `json:"admission,omitempty"`
 }
 
 // MaxChildWorkflowSourceBytes caps decoded UTF-8 proposal bytes at admission.

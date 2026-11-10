@@ -7,6 +7,9 @@ import (
 )
 
 func (c *ClaudeAdapter) preflightCredentialEnv(ctx context.Context, env []string) ([]string, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return nil, err
+	}
 	if c.ModelCredential == nil {
 		return env, nil
 	}

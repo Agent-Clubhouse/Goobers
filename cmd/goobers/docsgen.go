@@ -151,7 +151,7 @@ func writeCLIDocs(docsDir string) error {
 func isGeneratedDocFile(rel string) bool {
 	rel = filepath.ToSlash(rel)
 	switch {
-	case strings.HasPrefix(rel, "man/") && strings.HasSuffix(rel, ".1"):
+	case (rel == "man/goobers.1" || strings.HasPrefix(rel, "man/goobers-") && !strings.HasPrefix(rel, "man/goobers-cloud")) && strings.HasSuffix(rel, ".1"):
 		return true
 	case rel == "cli/README.md":
 		return true

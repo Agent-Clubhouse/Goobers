@@ -17,6 +17,7 @@ import (
 
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 type appDeliveryTestTransport func(*http.Request) (*http.Response, error)
@@ -99,7 +100,7 @@ func TestGitHubAppTokenSourcesApplyTheDeliveryFloor(t *testing.T) {
 		{
 			name: "repository",
 			build: func() (credentials.ExpiringResolveFunc, error) {
-				return newGitHubAppTokenSource(instance.RepoRef{
+				return runtimewiring.NewGitHubAppTokenSource(instance.RepoRef{
 					Provider: "github", Owner: "example-org", Name: "example-repo",
 					Auth: &instance.RepoAuthConfig{Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42", PrivateKey: keyRef},
 				}, nil, nil)
@@ -108,7 +109,7 @@ func TestGitHubAppTokenSourcesApplyTheDeliveryFloor(t *testing.T) {
 		{
 			name: "agent:model",
 			build: func() (credentials.ExpiringResolveFunc, error) {
-				return newAgentModelGitHubAppTokenSource(&instance.AgentModelGitHubAppConfig{
+				return runtimewiring.NewAgentModelGitHubAppTokenSource(&instance.AgentModelGitHubAppConfig{
 					Name: "example-model-app", AppID: "123456", InstallationID: "42",
 					Repository: "example-org/example-repo", RepositoryID: "987654", PrivateKey: keyRef,
 				}, nil, nil)
@@ -117,7 +118,7 @@ func TestGitHubAppTokenSourcesApplyTheDeliveryFloor(t *testing.T) {
 		{
 			name: "daemon identity",
 			build: func() (credentials.ExpiringResolveFunc, error) {
-				return newDaemonIdentityGitHubAppTokenSource(&instance.DaemonIdentityConfig{
+				return runtimewiring.NewDaemonIdentityGitHubAppTokenSource(&instance.DaemonIdentityConfig{
 					Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42", PrivateKey: keyRef,
 				}, "example-org", "example-repo", nil, nil)
 			},

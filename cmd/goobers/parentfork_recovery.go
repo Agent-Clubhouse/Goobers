@@ -8,6 +8,7 @@ import (
 	"github.com/goobers/goobers/internal/parallelworkspace"
 	"github.com/goobers/goobers/internal/parallelworkspace/spec"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -28,7 +29,7 @@ func (r parentArchiveRestorer) recoverForkPlan(ctx context.Context, run *journal
 	if err != nil {
 		return err
 	}
-	project, err := recoveryConfiguredProject(r.config, snapshot.Record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(r.config, snapshot.Record.RepositoryKey)
 	if err != nil {
 		return err
 	}

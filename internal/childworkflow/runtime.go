@@ -15,17 +15,21 @@ import (
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 // RuntimeConfig supplies only host-owned execution authority. Definitions is
 // the successfully applied catalog, not an unvalidated working config tree.
 type RuntimeConfig struct {
-	Queue           *triggerqueue.Store
-	Grants          *podauth.SignedKey
-	Endpoint        string
-	Definitions     *instance.ConfigSet
-	OpenJournal     func(context.Context, string) (*journal.Reader, error)
-	LoadPinnedStage func(context.Context, *instance.ConfigSet, journal.RunIdentity, string) (PinnedStageAdmission, error)
+	Queue                  *triggerqueue.Store
+	Grants                 *podauth.SignedKey
+	Endpoint               string
+	Definitions            *instance.ConfigSet
+	OpenJournal            func(context.Context, string) (*journal.Reader, error)
+	LoadPinnedStage        func(context.Context, *instance.ConfigSet, journal.RunIdentity, string) (PinnedStageAdmission, error)
+	ClusterModel           *workflowcluster.Model
+	ClusterModelConfigured bool
+	ClusterFitness         map[string]workflowcluster.ClusterFitness
 }
 
 // Runtime fences grant issuance against applied policy reloads. It owns one
@@ -57,9 +61,21 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	}
 	r := &Runtime{definitions: definitions, policies: policies, queue: cfg.Queue}
 	r.resolver = &JournalAuthorityResolver{
-		OpenJournal: cfg.OpenJournal,
+		OpenJournal: func(ctx context.Context, runID string) (journal.RunReader, error) {
+			rd, err := cfg.OpenJournal(ctx, runID)
+			if err != nil || rd == nil {
+				return nil, errors.Join(ErrAuthorityUnavailable, err)
+			}
+			return rd, nil
+		},
 		LoadPinnedStage: func(ctx context.Context, id journal.RunIdentity, stage string) (PinnedStageAdmission, error) {
-			return cfg.LoadPinnedStage(ctx, r.definitions, id, stage)
+			pinned, err := cfg.LoadPinnedStage(ctx, r.definitions, id, stage)
+			if err == nil {
+				pinned.Admission.ClusterModel = cfg.ClusterModel
+				pinned.Admission.ClusterModelConfigured = cfg.ClusterModelConfigured
+				pinned.Admission.ClusterFitness = cfg.ClusterFitness
+			}
+			return pinned, err
 		},
 	}
 	r.issuer = GrantIssuer{Queue: cfg.Queue, Grants: cfg.Grants, Authority: r.resolver, Endpoint: cfg.Endpoint}

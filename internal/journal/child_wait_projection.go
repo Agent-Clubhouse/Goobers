@@ -61,6 +61,18 @@ func projectChildWaits(events []Event, observe func(Event, *childWaitProjector) 
 	return p.projection(), nil
 }
 
+// ChildWaitProjectionTypes are the only event types ProjectChildWaits reads;
+// it ignores every other type. A reader may select just these from storage
+// and get the same projection (and so the same ParkedOnChild) as from the
+// whole journal. Keep in step with childWaitProjector.consume.
+func ChildWaitProjectionTypes() []EventType {
+	return []EventType{
+		EventParallelStarted, EventParallelFinished, EventMapStarted, EventMapFinished,
+		EventBranchStarted, EventBranchFinished, EventStageStarted, EventStageFinished,
+		EventRunFinished, EventRunnerAnnotation,
+	}
+}
+
 func hasChildWait(events []Event) bool {
 	for _, event := range events {
 		if event.Type == EventRunnerAnnotation && (event.Runner["kind"] == ChildWaitKind || event.Runner["kind"] == ChildContinuedKind) {

@@ -6,6 +6,9 @@ instance. A separately initialized instance receives a different ID. Do not
 delete the file to silence duplicate-identity warnings: first determine which
 copy owns the continuing history.
 
+The same ID is recorded in new run journals and provider attribution. Fresh
+roots create only `.instance-id`; there is no separate attribution identity.
+
 ```console
 goobers status --daemon /path/to/instance
 goobers status --json /path/to/instance
@@ -37,6 +40,16 @@ See [multiple instances against one repo](multiple-instances-one-repo.md).
 A legacy root without `.instance-id` remains inspectable and is labeled as
 unidentified. Startup or a root-mutating command adopts an ID under an exclusive
 identity lock. Invalid identity files are not silently replaced.
+
+Older roots may also contain the former `instance-id` attribution file. If it
+is the only identity, startup adopts its value as `.instance-id` without
+rotation. If both files exist with different valid values, `.instance-id`
+remains canonical and the old `instance-id` value is persisted in the
+root-scoped, versioned `.instance-id-aliases` record. Existing journals and the
+legacy file are not rewritten. New runs use the canonical ID, while audit and
+telemetry correlation can resolve either historical value to the same root.
+Invalid identity or alias files fail closed and require operator repair; do not
+delete or edit them to force migration.
 
 Manual root mutations print the canonical path and ID before their action.
 For initialization, creating the root directory and identity files is the

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,6 +49,18 @@ func TestUpKeepsLoopbackPodAuthorityScoped(t *testing.T) {
 	key, err := podauth.NewSignedKey(keyBytes)
 	if err != nil {
 		t.Fatal(err)
+	}
+	discovery, err := (&http.Client{Timeout: 5 * time.Second}).Get("http://" + daemon.address + apicontract.DiscoveryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var advertised struct {
+		Authentication string `json:"authentication"`
+	}
+	err = json.NewDecoder(discovery.Body).Decode(&advertised)
+	_ = discovery.Body.Close()
+	if err != nil || discovery.StatusCode != http.StatusOK || advertised.Authentication != "none" {
+		t.Fatalf("local discovery authentication=%q, status=%d, error=%v", advertised.Authentication, discovery.StatusCode, err)
 	}
 	token, err := key.MintScoped(strings.Repeat("a", 32), time.Minute, httpapi.ScopeBlob)
 	if err != nil {

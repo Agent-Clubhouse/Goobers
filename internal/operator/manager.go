@@ -6,7 +6,9 @@ import (
 	"log/slog"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -20,6 +22,8 @@ type Options struct {
 	HealthAddr string
 	// LeaderElection enables leader election for HA operator deployments.
 	LeaderElection bool
+	// WorkerImage overrides the worker container image. Empty uses the placeholder default.
+	WorkerImage string
 }
 
 // DefaultOptions returns sane defaults for running in-cluster.
@@ -60,15 +64,20 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options) error {
 		return fmt.Errorf("add readyz: %w", err)
 	}
 
-	reconciler := &GaggleReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Registrar: NoopRegistrar{Log: logger},
-	}
+	reconciler := newGaggleReconciler(mgr.GetClient(), mgr.GetScheme(), logger, opts)
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup gaggle reconciler: %w", err)
 	}
 
 	logger.Info("operator manager starting")
 	return mgr.Start(ctx)
+}
+
+func newGaggleReconciler(c client.Client, scheme *runtime.Scheme, logger *slog.Logger, opts Options) *GaggleReconciler {
+	return &GaggleReconciler{
+		Client:      c,
+		Scheme:      scheme,
+		Registrar:   NoopRegistrar{Log: logger},
+		WorkerImage: opts.WorkerImage,
+	}
 }

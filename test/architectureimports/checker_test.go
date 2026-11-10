@@ -173,6 +173,54 @@ import _ "example.com/architecture/internal/unreviewed"
 	}
 }
 
+func TestGoobersClosureExcludesCloudDeps(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	cfg, err := loadConfig(filepath.Join(root, "test", "architectureimports", "rules.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkClosures(context.Background(), root, cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGoobersClosureRejectsPGXFixture(t *testing.T) {
+	root := syntheticModule(t, map[string]string{
+		"go.mod": `module example.com/architecture
+
+go 1.26.10
+
+require github.com/jackc/pgx/v5 v5.0.0
+
+replace github.com/jackc/pgx/v5 => ./third_party/pgx
+`,
+		"cmd/goobers/main.go": `package main
+import _ "github.com/jackc/pgx/v5"
+func main() {}
+`,
+		"third_party/pgx/go.mod": "module github.com/jackc/pgx/v5\n\ngo 1.26.10\n",
+		"third_party/pgx/pgx.go": "package pgx\n",
+	})
+	cfg := config{
+		Module: testModule,
+		Builds: []buildContext{{
+			Name: runtime.GOOS, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+		}},
+		ClosureRules: []closureRule{{
+			Name:  "local",
+			Roots: []string{testModule + "/cmd/goobers"},
+			Forbidden: []boundary{{
+				Path: "github.com/jackc/pgx", Rationale: "cloud database client",
+			}},
+		}},
+	}
+	err := checkClosures(context.Background(), root, cfg)
+	if err == nil || !strings.Contains(err.Error(), "forbidden cloud dependency github.com/jackc/pgx/v5") ||
+		!strings.Contains(err.Error(), "cmd/goobers -> github.com/jackc/pgx/v5") {
+		t.Fatalf("error = %v, want pgx import chain", err)
+	}
+}
+
 func TestCheckFailsClosedOnMissingOrInvalidGraph(t *testing.T) {
 	t.Run("missing namespace", func(t *testing.T) {
 		root := syntheticModule(t, map[string]string{
@@ -300,7 +348,9 @@ func testConfig() config {
 func syntheticModule(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
-	files["go.mod"] = "module " + testModule + "\n\ngo 1.26.6\n"
+	if _, supplied := files["go.mod"]; !supplied {
+		files["go.mod"] = "module " + testModule + "\n\ngo 1.26.10\n"
+	}
 	for name, body := range files {
 		path := filepath.Join(root, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

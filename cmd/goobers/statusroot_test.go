@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -18,7 +20,7 @@ func stoppedStatusRootHeader(t *testing.T, root string, recordedPID int) string 
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := fmt.Sprintf("Instance root: %q; instance ID: %q; daemon: not-running; owning PID: 0\n", canonicalStatusRoot(root), id)
+	header := fmt.Sprintf("Instance root: %q; instance ID: %q; daemon: not-running; owning PID: 0\n", runtimewiring.CanonicalStatusRoot(root), id)
 	if recordedPID != 0 {
 		header += fmt.Sprintf("  Recorded daemon PID: %d; recorded root: %q (recorded metadata alone is not liveness)\n", recordedPID, root)
 	}
@@ -35,7 +37,7 @@ func TestStatusRootDistinguishesLiveOwnerFromRecordedPID(t *testing.T) {
 	}
 	t.Cleanup(release)
 	live := inspectStatusRoot(layout, time.Now())
-	if live.ID == "" || live.Path != canonicalStatusRoot(root) || live.OwningPID != os.Getpid() || live.DaemonState != "healthy" {
+	if live.ID == "" || live.Path != runtimewiring.CanonicalStatusRoot(root) || live.OwningPID != os.Getpid() || live.DaemonState != "healthy" {
 		t.Fatalf("live owner unclear: %+v", live)
 	}
 	release()
@@ -76,7 +78,7 @@ func TestStatusRootSurfacesTextJSONAndDaemon(t *testing.T) {
 	}
 	for _, args := range [][]string{{"status", root}, {"status", "--daemon", root}} {
 		_, stdout, _ := runArgs(t, args...)
-		if !strings.Contains(stdout, "Instance root:") || !strings.Contains(stdout, id) || !strings.Contains(stdout, canonicalStatusRoot(root)) {
+		if !strings.Contains(stdout, "Instance root:") || !strings.Contains(stdout, id) || !strings.Contains(stdout, runtimewiring.CanonicalStatusRoot(root)) {
 			t.Fatalf("missing root identity: %s", stdout)
 		}
 	}
@@ -88,7 +90,7 @@ func TestStatusRootSurfacesTextJSONAndDaemon(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Root == nil || got.Root.ID != id || got.Root.Path != canonicalStatusRoot(root) {
+	if got.Root == nil || got.Root.ID != id || got.Root.Path != runtimewiring.CanonicalStatusRoot(root) {
 		t.Fatalf("missing JSON identity: %s", stdout)
 	}
 }

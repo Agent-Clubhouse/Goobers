@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -141,7 +142,7 @@ type credentialFaultingDeterministic struct {
 func (d *credentialFaultingDeterministic) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	d.attempts++
 	return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(
-		codedStageFailure(telemetry.ErrCodeCredentialUnavailable,
+		runsemantics.CodedStageFailure(telemetry.ErrCodeCredentialUnavailable,
 			errCredentialMaterialization),
 	)
 }
@@ -188,9 +189,9 @@ func TestCredentialFaultDoesNotConsumeAgenticAttempts(t *testing.T) {
 	if res.Phase != journal.PhaseFailed {
 		t.Fatalf("phase = %q, want failed after the infrastructure budget exhausts", res.Phase)
 	}
-	if det.attempts != int(DefaultMaxInfrastructureAttempts) {
+	if det.attempts != int(runsemantics.DefaultMaxInfrastructureAttempts) {
 		t.Fatalf("dispatches = %d, want %d (the infrastructure budget, NOT the 1-attempt policy budget)",
-			det.attempts, DefaultMaxInfrastructureAttempts)
+			det.attempts, runsemantics.DefaultMaxInfrastructureAttempts)
 	}
 	if res.FailureCode != telemetry.ErrCodeCredentialUnavailable {
 		t.Fatalf("terminal FailureCode = %q, want %q so the disposition is machine-readable",
@@ -234,8 +235,8 @@ func TestCredentialFaultDoesNotConsumeAgenticAttempts(t *testing.T) {
 	if policyAttempts != 0 {
 		t.Fatalf("policy-class retries = %d, want 0 — an infrastructure fault must never charge the work-attempt budget", policyAttempts)
 	}
-	if infraAttempts != int(DefaultMaxInfrastructureAttempts)-1 {
-		t.Fatalf("infra-class retries = %d, want %d", infraAttempts, DefaultMaxInfrastructureAttempts-1)
+	if infraAttempts != int(runsemantics.DefaultMaxInfrastructureAttempts)-1 {
+		t.Fatalf("infra-class retries = %d, want %d", infraAttempts, runsemantics.DefaultMaxInfrastructureAttempts-1)
 	}
 	if !sawTypedClass {
 		t.Fatal("no attempt error carried errorCode=credential_unavailable / errorClass=infra in the runner namespace")

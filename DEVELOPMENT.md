@@ -67,6 +67,20 @@ under the architecture quarantine plan. They are not current deployment paths.
 Every binary uses `internal/app.Main` for version output, structured logging,
 and signal-aware shutdown.
 
+The quarantined `operator` binary accepts these environment overrides:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GOOBERS_OPERATOR_METRICS_ADDR` | `:8080` | Metrics bind address; `0` disables metrics |
+| `GOOBERS_OPERATOR_HEALTH_ADDR` | `:8081` | Health/readiness probe bind address; `0` disables probes |
+| `GOOBERS_OPERATOR_LEADER_ELECTION` | `false` | Enable leader election with `true` |
+| `GOOBERS_OPERATOR_WORKER_IMAGE` | `ghcr.io/goobers/goober-runtime:latest` | Image for reconciled worker Deployments |
+
+Unset or empty values keep the defaults. An invalid leader-election boolean
+fails startup. The default worker image remains an unpublished placeholder;
+these overrides do not remove the operator's quarantine or enable its reference
+Deployment, which remains at zero replicas.
+
 ## Portal development
 
 See [portal/README.md](portal/README.md) for the frontend development loop.

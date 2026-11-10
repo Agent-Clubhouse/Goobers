@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // recoveryInventorySampleInterval is how often the daemon re-measures shared
@@ -99,7 +100,7 @@ func (g *recoveryInventoryGate) Sample(ctx context.Context) *readservice.Recover
 }
 
 func (g *recoveryInventoryGate) observe(ctx context.Context) *readservice.RecoveryInventoryStatus {
-	policy, origin := resolveRecoveryPolicy(g.layout, g.cfg)
+	policy, origin := runtimewiring.ResolveRecoveryPolicy(g.layout, g.cfg)
 	limit := policy.MaxSnapshotsEffective()
 	root := filepath.Join(g.layout.Root, "recovery")
 	status := &readservice.RecoveryInventoryStatus{
@@ -122,7 +123,7 @@ func (g *recoveryInventoryGate) observe(ctx context.Context) *readservice.Recove
 	entries, unreadable, err := recovery.ReadInventoryTolerant(ctx, root, recovery.MaxInventoryEntries)
 	if err != nil {
 		status.State = readservice.RecoveryInventoryUnavailable
-		status.Error = recoveryInventoryReadError(err, limit).Error()
+		status.Error = runtimewiring.RecoveryInventoryReadError(err, limit).Error()
 		return status
 	}
 	// Incomplete reservations occupy slots until they are reconciled, so they

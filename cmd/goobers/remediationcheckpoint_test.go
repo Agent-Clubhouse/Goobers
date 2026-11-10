@@ -882,15 +882,15 @@ func TestRemediationCauseBudgetsAreIndependent(t *testing.T) {
 		if exhausted, ok := exhaustedRemediationCause(attempts, []remediationCause{cause}, budgets); ok {
 			t.Fatalf("distinct cause %q unexpectedly exhausted by attempts %+v (reported %q)", cause, attempts, exhausted)
 		}
-		attempts.increment(cause)
+		attempts.Increment(cause)
 	}
 	for _, cause := range remediationCauseOrder {
-		if got := attempts.forCause(cause); got != 1 {
+		if got := attempts.ForCause(cause); got != 1 {
 			t.Fatalf("%s attempts = %d, want 1 after four distinct problems", cause, got)
 		}
 	}
 
-	attempts.increment(remediationCauseConflict)
+	attempts.Increment(remediationCauseConflict)
 	if cause, ok := exhaustedRemediationCause(attempts, []remediationCause{remediationCauseConflict}, budgets); !ok || cause != remediationCauseConflict {
 		t.Fatalf("two conflict attempts: exhausted cause = %q, ok = %v, want conflict", cause, ok)
 	}

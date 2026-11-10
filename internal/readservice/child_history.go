@@ -43,6 +43,7 @@ type ChildHistoryItem struct {
 	ExpiredAt             *time.Time               `json:"expiredAt,omitempty"`
 	CancellationRequested bool                     `json:"cancellationRequested"`
 	Publication           *ChildPublicationHistory `json:"publication,omitempty"`
+	Admission             *ChildAdmissionHistory   `json:"admission,omitempty"`
 }
 
 const childHistoryPageSize = 50
@@ -53,7 +54,7 @@ func (s *Local) RunChildren(ctx context.Context, runID, cursor string) (ChildHis
 	if err := ctx.Err(); err != nil {
 		return ChildHistoryPage{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return ChildHistoryPage{}, err
 	}
@@ -91,7 +92,11 @@ func (s *Local) RunChildren(ctx context.Context, runID, cursor string) (ChildHis
 		if err != nil {
 			return ChildHistoryPage{}, err
 		}
-		out.Items = append(out.Items, ChildHistoryItem{ChildID: record.ChildID, RunID: record.RunID, StageOccurrence: record.Identity.StageOccurrence, InvocationKey: record.Identity.InvocationKey, State: record.State, AcceptedAt: record.AcceptedAt, UpdatedAt: record.UpdatedAt, TerminalAt: childHistoryTime(record.TerminalAt), AcknowledgedAt: childHistoryTime(record.AcknowledgedAt), ExpiredAt: childHistoryTime(record.TombstonedAt), CancellationRequested: record.CancellationRequested, Publication: publication})
+		admission, err := s.childAdmission(ctx, record)
+		if err != nil {
+			return ChildHistoryPage{}, err
+		}
+		out.Items = append(out.Items, ChildHistoryItem{ChildID: record.ChildID, RunID: record.RunID, StageOccurrence: record.Identity.StageOccurrence, InvocationKey: record.Identity.InvocationKey, State: record.State, AcceptedAt: record.AcceptedAt, UpdatedAt: record.UpdatedAt, TerminalAt: childHistoryTime(record.TerminalAt), AcknowledgedAt: childHistoryTime(record.AcknowledgedAt), ExpiredAt: childHistoryTime(record.TombstonedAt), CancellationRequested: record.CancellationRequested, Publication: publication, Admission: admission})
 	}
 	return annotated[ChildHistoryPage](ctx, s, out), nil
 }

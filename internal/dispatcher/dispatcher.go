@@ -16,7 +16,8 @@ import (
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // Defaults for Config fields left zero. Each is a named constant so a
@@ -352,9 +353,15 @@ type Attempt struct {
 	Workflow string
 	Stage    string
 	Number   int
+	// DSLVersion is pinned by the originating invocation, never authored Env.
+	DSLVersion string
 	// PodAttempt separates physical dispatch identity from the journal ordinal.
 	// Zero uses Number for legacy callers.
 	PodAttempt int
+	// FanOutVisit and FanOutBranch scope retries of one fan-out occurrence.
+	// Zero values preserve legacy root-stage identity.
+	FanOutVisit  uint64
+	FanOutBranch int
 	// Class is the driver-supplied retry lineage; empty identifies an initial
 	// or legacy attempt. The pod ordinal cannot determine this class.
 	Class journal.AttemptClass
@@ -405,6 +412,11 @@ type Attempt struct {
 	// PodToken is the per-run bearer (internal/podauth) minted at dispatch,
 	// delivered to the pod as GOOBERS_POD_TOKEN.
 	PodToken string
+	// ChildWorkflowAccess is an engine parent stage's child-workflow grant as
+	// JSON, delivered as GOOBERS_CHILD_WORKFLOW_ACCESS; empty for every other
+	// stage. Like PodToken it is a bearer: it never enters the kit, the
+	// envelope or the journal.
+	ChildWorkflowAccess string
 	// PlaneTokens are the per-run, per-plane least-privilege bearers minted
 	// at dispatch for a goobers-CLI stage (Goobers#3897). Never the pod token:
 	// each is confined by podauth scope to ONE plane and by that plane's
@@ -435,6 +447,9 @@ type Attempt struct {
 	// surrendered stdout instead of its result file, which silently changed
 	// gate outcomes rather than failing (Goobers#3699 v1 cut).
 	Inputs map[string]string
+	// Outbox is the runner-owned set of workspace-relative paths the pod
+	// supervisor exports after execution. It is never stage-authored env.
+	Outbox []string
 
 	// CheckoutCapability is the capability the pod may mint solely to provision
 	// a repo workspace (#3770) — never exported to the stage's environment.
@@ -496,6 +511,10 @@ type Attempt struct {
 	// (agentickit.Kit.ReviewRequiresDiff), never the pod spec. Meaningless
 	// without Review.
 	ReviewRequiresDiff bool
+	// UsageAllowance is the trusted remaining token/cost budget for this
+	// physical attempt. Nil is the legacy/unlimited contract; explicit zero
+	// fields mean exhausted and must prevent harness start.
+	UsageAllowance *usageallowance.Allowance
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.
@@ -807,6 +826,12 @@ func (t PlaneTokens) Distinct(podToken string) bool {
 // Report is one Dispatch outcome: the placement facts that feed the
 // journal.Placement provenance event.
 type Report struct {
+	// ParentWritersStopped attests termination of the exact contained parent pod.
+	// Neither DELETE acceptance nor object absence supplies this evidence.
+	ParentWritersStopped bool
+	// PodCreateAttempted distinguishes a refusal before the Kubernetes create
+	// call from an ambiguous create outcome that may already be executing.
+	PodCreateAttempted bool
 	// ChildPodUID is the API-created object identity, never a name-derived ID.
 	ChildPodUID string
 	// ChildCreateAttempted distinguishes a preflight refusal from an uncertain
@@ -906,8 +931,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		return Report{}, err
 	}
 	report := Report{Runner: selected.Name, QueuedAt: d.now().UTC()}
-	report.Build = os.Getenv(runner.EnvPlacementBuild)
-	report.Worker = os.Getenv(runner.EnvPlacementWorker)
+	report.Build = os.Getenv(runsemantics.EnvPlacementBuild)
+	report.Worker = os.Getenv(runsemantics.EnvPlacementWorker)
 
 	if selected.HostKind == instance.RunnerHostSelf {
 		// host: self — the local execution path (fresh worktree per attempt,
@@ -959,6 +984,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// in versioned error details. Keeping this stamp before creation preserves
 	// the selected image even when creation fails, without inventing a pod.
 	report.Image = stageContainerImage(pod)
+	if attempt.ChildWorkflowAccess != "" {
+		pod, err = prepareParentHandoffPod(pod, attempt)
+		if err != nil {
+			return report, err
+		}
+	}
 
 	if err := d.createAttemptPod(ctx, pod, attempt, &report); err != nil {
 		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
@@ -966,8 +997,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()
 
-	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, &report)
+	return report, d.finishAttemptPod(ctx, attempt, pod, &report)
+}
+
+func (d *Dispatcher) finishAttemptPod(ctx context.Context, attempt Attempt, pod *corev1.Pod, report *Report) error {
+	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, report)
+	if attempt.ChildWorkflowAccess != "" {
+		phase, superviseErr = d.stopParentHandoffPod(ctx, attempt, pod, report, phase, superviseErr)
+	}
 	report.Phase = phase
+	if superviseErr != nil && ctx.Err() != nil && workerHandoffRequested(ctx) {
+		return ErrWorkerHandoff
+	}
 	settlementCtx, cancelSettlement := childSettlementContext(ctx, attempt)
 	defer cancelSettlement()
 
@@ -1013,13 +1054,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	}
 
 	if superviseErr != nil {
-		return report, superviseErr
+		return superviseErr
 	}
 	if phase == corev1.PodFailed {
-		return report, fmt.Errorf("%w (run %s stage %s attempt %d, pod %s)",
+		return fmt.Errorf("%w (run %s stage %s attempt %d, pod %s)",
 			ErrStageFailed, attempt.RunID, attempt.Stage, attempt.Number, pod.Name)
 	}
-	return report, nil
+	return nil
 }
 
 // stageContainerImage reads the stage container's image off a rendered pod.

@@ -25,6 +25,9 @@ param systemNodeCount int = 2
 @description('Resource ID of the Log Analytics workspace for Container Insights.')
 param logAnalyticsWorkspaceId string
 
+@description('Resource ID of the node subnet in the instance VNet; empty uses an AKS-managed VNet.')
+param vnetSubnetId string = ''
+
 @description('Tags applied to the cluster.')
 param tags object = {}
 
@@ -61,6 +64,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-02-01' = {
         osType: 'Linux'
         osSKU: 'AzureLinux'
         type: 'VirtualMachineScaleSets'
+        vnetSubnetID: empty(vnetSubnetId) ? null : vnetSubnetId
         enableAutoScaling: true
         minCount: systemNodeCount
         maxCount: systemNodeCount + 3
@@ -100,3 +104,6 @@ output oidcIssuerUrl string = aks.properties.oidcIssuerProfile.issuerURL
 
 @description('Object ID of the cluster kubelet identity (for ACR pulls etc.).')
 output kubeletObjectId string = aks.properties.identityProfile.kubeletidentity.objectId
+
+@description('Principal ID of the cluster control-plane identity.')
+output principalId string = aks.identity.principalId

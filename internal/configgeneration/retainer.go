@@ -68,3 +68,23 @@ func (r *Retainer) Close() error {
 	}
 	return errors.Join(errs...)
 }
+
+// UseRetained verifies and pins existing custody without recapturing its tree
+// or admitting a new generation. Strict archive and permission checks remain
+// identical to recovery through Store.Acquire.
+func (r *Retainer) UseRetained(ctx context.Context, digest string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pins[digest] != nil {
+		return r.Store.Load(ctx, digest)
+	}
+	directory, lease, err := r.Store.Acquire(ctx, digest)
+	if err != nil {
+		return "", err
+	}
+	if r.pins == nil {
+		r.pins = make(map[string]*lock.Handle)
+	}
+	r.pins[digest] = lease
+	return directory, nil
+}

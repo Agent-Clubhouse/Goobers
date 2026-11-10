@@ -652,7 +652,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// Release the lease now rather than waiting for it to expire — the run
 	// is finished with this item, and RecoverExpired's periodic sweep
 	// (goobers up, #131) should not have to reclaim it later.
-	err = ledger.Locked(claimContext(), claimLockOperationCloseOutRelease, func(tx claimsclient.Ledger) error {
+	err = claimsclient.Sequence(claimContext(), ledger, claimLockOperationCloseOutRelease, func(tx claimsclient.Ledger) error {
 		return tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(claim), runID, issueCloseOutReleaseReason(status))
 	})
 	if err != nil {

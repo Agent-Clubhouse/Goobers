@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,5 +145,45 @@ func TestCopilotNativeCheckpointPinsConfiguredHomeBeforeLogExists(t *testing.T) 
 	}
 	if len(got) != 1 || string(got[0].Data) != "late-created native log" || got[0].Reason != "timeout" {
 		t.Fatalf("missing configured-home capture: %+v", got)
+	}
+}
+
+func TestCopilotNativeCheckpointRepairSharesByteLimit(t *testing.T) {
+	for _, limit := range []int64{4, 10, 20} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			workspace := t.TempDir()
+			first, second := filepath.Join(workspace, "initial"), filepath.Join(workspace, "repair")
+			if err := os.WriteFile(first, []byte("initial\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(second, []byte("repair\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var got []InvocationTranscriptDelta
+			req := RunRequest{Workspace: workspace, MaxTranscriptBytes: limit, TranscriptCheckpointInterval: time.Hour,
+				TranscriptCheckpoint: func(delta InvocationTranscriptDelta) error { got = append(got, delta); return nil },
+			}
+			worker, err := startCopilotTranscriptCheckpoints(&req, first, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := worker.follow(req, second, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := worker.finish(nil); err != nil {
+				t.Fatal(err)
+			}
+			var data []byte
+			for _, delta := range got {
+				if delta.Offset != len(data) {
+					t.Fatalf("offset=%d, want %d", delta.Offset, len(data))
+				}
+				data = append(data, delta.Data...)
+			}
+			want := "initial\nrepair\n"
+			if string(data) != want[:min(int64(len(want)), limit)] || got[len(got)-1].DroppedBytes != max(0, int64(len(want))-limit) {
+				t.Fatalf("data=%q checkpoints=%+v", data, got)
+			}
+		})
 	}
 }

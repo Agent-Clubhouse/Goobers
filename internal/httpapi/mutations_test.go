@@ -134,12 +134,14 @@ func TestMutationRoutesInvokeServiceThroughTier1Seam(t *testing.T) {
 	}
 
 	tests := []struct {
-		action string
-		body   string
+		action        string
+		serviceAction string
+		body          string
 	}{
-		{action: "approve", body: `{"actor":"local-user","decision":"pass"}`},
-		{action: "override", body: `{"actor":"local-user","decision":"pass","rationale":"reviewed manually"}`},
-		{action: "rerun", body: `{"actor":"local-user","instructionAddendum":"use the parser seam"}`},
+		{action: "approve", serviceAction: "approve", body: `{"actor":"local-user","decision":"pass"}`},
+		{action: "override", serviceAction: "override", body: `{"actor":"local-user","decision":"pass","rationale":"reviewed manually"}`},
+		{action: "rerun", serviceAction: "rerun", body: `{"actor":"local-user","instructionAddendum":"use the parser seam"}`},
+		{action: "retry", serviceAction: "rerun", body: `{"actor":"local-user"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.action, func(t *testing.T) {
@@ -153,9 +155,12 @@ func TestMutationRoutesInvokeServiceThroughTier1Seam(t *testing.T) {
 				t.Fatalf("calls = %+v", service.calls)
 			}
 			call := service.calls[0]
-			if call.action != test.action || call.input.RunID != "run-1" ||
+			if call.action != test.serviceAction || call.input.RunID != "run-1" ||
 				call.input.Stage != "review" || call.input.Actor != "local-user" {
 				t.Fatalf("call = %+v", call)
+			}
+			if call.input.DeterministicRetry != (test.action == "retry") {
+				t.Fatalf("deterministic retry = %t for %s", call.input.DeterministicRetry, test.action)
 			}
 			var result InterventionResult
 			if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
@@ -492,6 +497,7 @@ func TestMutationRoutesAreRuntimeMutationSurfaceActions(t *testing.T) {
 		"approveStage":  "approve",
 		"overrideStage": "override",
 		"rerunStage":    "rerun",
+		"retryStage":    "retry",
 	}
 	found := make(map[apicontract.ActionID]apicontract.CapabilityID, len(want))
 	for _, action := range SurfaceActions() {
@@ -507,5 +513,38 @@ func TestMutationRoutesAreRuntimeMutationSurfaceActions(t *testing.T) {
 	}
 	if len(found) != len(want) {
 		t.Fatalf("runtime mutations = %+v, want %+v", found, want)
+	}
+}
+
+type panickingRerunInterventions struct{ fakeInterventions }
+
+func (*panickingRerunInterventions) AcceptRerunStage(context.Context, context.Context, InterventionRequest) (InterventionResult, error) {
+	panic("custody collaborator failed")
+}
+
+func TestRerunPanicReturnsStructuredHTTPError(t *testing.T) {
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithInterventions(&panickingRerunInterventions{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	req, err := http.NewRequest(http.MethodPost, server.URL+stagePath("rerun"), strings.NewReader(`{"actor":"operator","instructionAddendum":"retry"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(HeaderIdempotencyKey, "panic-rerun")
+	response, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("rerun dropped HTTP connection: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	var body map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusInternalServerError || body["error"] == nil {
+		t.Fatalf("response = %d %v", response.StatusCode, body)
 	}
 }

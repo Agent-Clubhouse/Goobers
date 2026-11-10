@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -371,8 +372,13 @@ func TestCIWorkflowRunsWindowsShippedWorkflowContracts(t *testing.T) {
 		t.Error("shipped-workflow contract matrix must include Windows")
 	}
 	if !strings.Contains(shipped, `timeout: "40m"`) ||
-		!strings.Contains(shipped, "GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}") {
+		!strings.Contains(shipped, "GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}") ||
+		!strings.Contains(shipped, "GOOBERS_CI_RACE: ${{ matrix.race }}") {
 		t.Error("Windows shipped-workflow contracts must receive sufficient timeout headroom")
+	}
+	if !strings.Contains(shipped, "os: ubuntu-latest\n            race: \"1\"") ||
+		!strings.Contains(shipped, "os: windows-latest\n            race: \"0\"") {
+		t.Error("shipped-workflow contracts must keep race coverage on Linux and the complete non-race suite on Windows")
 	}
 }
 
@@ -586,7 +592,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "temporal-cli", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		header := strings.SplitN(section, "\n    steps:", 2)[0]
 		if section == "" {
@@ -640,9 +646,8 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
+		"needs: [scope, cloud-pg, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, temporal-cli, unit, unit-linux-coverage, shipped, windows-smoke]",
 		"issues: write",
-		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
 		// goobers:approved and goobers:cloud are load-bearing, not decoration:
 		// without the trust gate and the claim partition a filed main-break issue
@@ -653,7 +658,8 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			t.Errorf("main failure escalation job must contain %q", want)
 		}
 	}
-	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	assertVersionedActionPin(t, escalation, "actions/github-script")
+	for _, job := range []string{"cloud-pg", "preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "temporal-cli", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)
@@ -710,7 +716,6 @@ func TestMainFailureEscalationClosesResolvedIssue(t *testing.T) {
 		t.Error("close step must require every watched job to be 'success', not merely non-failure: cancelled runs would close a live incident")
 	}
 	for _, want := range []string{
-		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.createComment",
 		"github.rest.issues.update",
 		`state: "closed"`,
@@ -719,6 +724,15 @@ func TestMainFailureEscalationClosesResolvedIssue(t *testing.T) {
 		if !strings.Contains(closeStep, want) {
 			t.Errorf("close step must contain %q", want)
 		}
+	}
+	assertVersionedActionPin(t, closeStep, "actions/github-script")
+}
+
+func assertVersionedActionPin(t *testing.T, workflow, action string) {
+	t.Helper()
+	pin := regexp.MustCompile(`(?m)^\s*(?:-\s*)?uses:\s*` + regexp.QuoteMeta(action) + `@[0-9a-fA-F]{40}[ \t]+#[ \t]+v[0-9]+(?:\.[0-9]+){0,2}[ \t]*$`)
+	if !pin.MatchString(workflow) {
+		t.Errorf("workflow must pin %s to a 40-hex SHA with a version comment", action)
 	}
 }
 

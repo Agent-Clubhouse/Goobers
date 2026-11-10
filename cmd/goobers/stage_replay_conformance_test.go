@@ -806,6 +806,7 @@ func replayAdvisoryPRPublishGitHub(t *testing.T) replayFixture {
 // There is no deferral class: a stage that reads back text Goobers wrote,
 // its own or another stage's, is a replay case.
 var replayExempt = map[string]string{
+	"decide":                 "read-only: asks the decision model about a local JSON file and writes only its result file; no provider mutation",
 	"advisory-pr-select":     "read-only: lists PRs and writes only a private claim and selection artifact, with no provider mutation",
 	"recovery-resume":        "read-only: re-attaches a recovered run's branch; local state only",
 	"backlog-dedupe":         "read-only: scores candidate duplicates into its result file (footer-free similarity: backlogdedupeattribution_test.go)",
@@ -816,6 +817,7 @@ var replayExempt = map[string]string{
 	"config-checkout":        "no read-back: clones the config repository, no provider text",
 	"preflight-repo-write":   "no read-back: probes push permission with a scratch ref",
 	"check-fail-first":       "read-only: runs the project's tests locally",
+	"fluid-ui-request":       "read-only: reads a Labs Fluid UI request and validates its candidate; no provider access",
 	"open-pr":                "no read-back: finds an existing pull request by head branch, not by text it wrote",
 	"report-pr-status":       "no read-back: publishes a native pull request status",
 	"gate-removal-guard":     "no read-back: labels and comments on a guard hit without reading its comment back",

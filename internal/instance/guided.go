@@ -628,6 +628,16 @@ func guidedConfig(opts GuidedOptions) *Config {
 				})
 			}
 		}
+		if slices.Contains(opts.Workflows, GuidedWorkflowWorkNomination) {
+			// Alert feeds require exact grants; issue-write and repo-read do
+			// not release these credentials. Bind the repository's read token.
+			for _, granted := range []capability.Capability{capability.GitHubCodeScanningRead, capability.GitHubDependabotAlertsRead} {
+				credentials = append(credentials, CredentialGrant{
+					Capability: string(granted),
+					Token:      repoToken,
+				})
+			}
+		}
 		if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) {
 			credentials = append(credentials, CredentialGrant{
 				Capability: string(capability.RepoPush),
@@ -759,6 +769,10 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return configSeedFile{}, fmt.Errorf("decode canonical workflow %s: %w", name, err)
 	}
+	if workflow.Annotations == nil {
+		workflow.Annotations = map[string]string{}
+	}
+	workflow.Annotations[TemplateProvenanceAnnotation] = ExampleTemplateProvenance(name)
 	workflow.Spec.Gaggle = opts.GaggleName
 	if name == GuidedWorkflowImplementation && opts.PullRequestCI {
 		tasks := workflow.Spec.Tasks[:0]

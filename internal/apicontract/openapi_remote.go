@@ -2,6 +2,26 @@ package apicontract
 
 func openAPIRemoteReadSchemas() map[string]any {
 	return map[string]any{
+		"FleetWorkflow": strictObjectSchema(
+			[]string{"key", "shape"},
+			map[string]any{
+				"key":         stringSchema(),
+				"shape":       stringSchema(),
+				"numeric":     map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "number"}},
+				"categorical": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "array", "items": stringSchema()}},
+			},
+		),
+		"FleetSnapshot": strictObjectSchema(
+			[]string{"version", "featureVersion", "instanceId", "generatedAt", "workflows"},
+			map[string]any{
+				"version":        stringSchema(),
+				"featureVersion": stringSchema(),
+				"instanceId":     stringSchema(),
+				"goobersVersion": stringSchema(),
+				"generatedAt":    dateTimeSchema(),
+				"workflows":      map[string]any{"type": "array", "items": schemaRef("FleetWorkflow")},
+			},
+		),
 		"BuildMetadata": objectSchema(
 			[]string{"version", "commit", "date"},
 			map[string]any{
@@ -118,6 +138,12 @@ func objectSchema(required []string, properties map[string]any) map[string]any {
 		"properties":           properties,
 		"additionalProperties": true,
 	}
+}
+
+func strictObjectSchema(required []string, properties map[string]any) map[string]any {
+	schema := objectSchema(required, properties)
+	schema["additionalProperties"] = false
+	return schema
 }
 
 func stringSchema() map[string]any {

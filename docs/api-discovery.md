@@ -75,3 +75,24 @@ The contract distinguishes bounded work-item lists (no cursor) from run
 pagination, requires repository identity for work-item detail and gaggle/window
 inputs for defect aggregates, and documents the mutually exclusive conditional
 headers for state writes.
+
+### Continuation lineage bounds
+
+Run detail and list responses include at most 50 direct continuations per run.
+`lineage.continuationsTruncated` and `lineage.continuationsNextCursor` identify
+another page. Fetch it with `GET /api/v1/runs/{run}?continuationsAfter={cursor}`;
+the cursor is the last returned run ID and ordering is ascending by run ID.
+Each page uses an indexed keyset lookup, without a total-count scan.
+
+Ancestor history stops after 64 distinct ancestors or a cycle. A missing source,
+cycle, or depth limit sets `lineage.historicalRepassCountPartial`; the reported
+count includes only visited ancestors and never the current run's budget.
+Request cancellation stops these walks.
+
+Offline trace uses the existing telemetry index for continuation children. If
+there is no index, it reports `lineage.continuationsIncomplete` and skips child
+discovery instead of scanning unrelated journals. An upgraded telemetry index
+also reports incomplete children until old rows are re-ingested with their
+explicit continuation identity; a manual trigger ref alone is insufficient.
+Normal ingestion or an explicit `goobers telemetry stats --rebuild <instance>` refreshes that
+projection. Trace text labels incomplete history and truncated child pages.

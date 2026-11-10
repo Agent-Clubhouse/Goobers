@@ -40,7 +40,7 @@ func (p *pendingChildExecutor) Review(context.Context, apiv1.InvocationEnvelope)
 	return apiv1.Verdict{}, p.pending()
 }
 
-func pendingChildRunner(t *testing.T, kind string, executor *pendingChildExecutor) (*Runner, StartInput) {
+func pendingChildRunner(t *testing.T, kind string, executor *pendingChildExecutor, lineage ...func(*journal.ChildLineage)) (*Runner, StartInput) {
 	t.Helper()
 	parallel := strings.HasPrefix(kind, "parallel-")
 	kind = strings.TrimPrefix(kind, "parallel-")
@@ -78,6 +78,9 @@ func pendingChildRunner(t *testing.T, kind string, executor *pendingChildExecuto
 		t.Fatal(err)
 	}
 	in := childWorkspaceStart(machine)
+	for _, edit := range lineage {
+		edit(in.Child)
+	}
 	id := journal.RunIdentity{RunID: in.RunID, Gaggle: in.Gaggle, Workflow: machine.Def.Name, WorkflowDigest: machine.Digest(), GooberDigest: in.GooberDigest, ConfigGeneration: base.cfg.ConfigGeneration, Child: in.Child}
 	isolated, err := base.ForChildExecution(id, ChildExecutionFactories{
 		NewAgentic:            func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) { return executor, nil },
@@ -156,4 +159,41 @@ func TestChildCancellationGraceCannotDetachUnjoinedOwner(t *testing.T) {
 		t.Fatal("owner did not return after join attempt")
 	}
 	assertChildPendingHistory(t, r, in)
+}
+
+func TestChildDriverAcceptsJournaledNoveltyOnResumeAndRerun(t *testing.T) {
+	approvedAt := time.Date(2026, 10, 9, 15, 0, 0, 123, time.FixedZone("operator", -7*3600))
+	executor := &pendingChildExecutor{}
+	r, in := pendingChildRunner(t, "agentic", executor, func(child *journal.ChildLineage) {
+		child.Novelty = &journal.ChildNovelty{Scored: true, ModelID: "model", ModelVersion: "workflowcluster.model/v1", FeatureVersion: "workflowcluster.features/v1", Nearest: "c2", NearestMedoid: "medoid", NearestSize: 3, Distance: 0.4200000000000001, OutOfDistribution: true,
+			HistoricalOutcome: &journal.ChildHistoricalOutcome{RunCount: 41, SuccessRate: 0.94}, HumanApprovalRequired: true, HumanApproval: &journal.ChildHumanApproval{Actor: "operator", ApprovedAt: approvedAt}}
+	})
+	if _, err := r.Start(t.Context(), in); !errors.Is(err, invoke.ErrChildCustodyPending) {
+		t.Fatal(err)
+	}
+	rd, err := journal.OpenReadOnly(filepath.Join(r.cfg.RunsDir, in.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := rd.Identity()
+	if err != nil || id.Child == nil || id.Child == in.Child || id.Child.Novelty == nil || id.Child.Novelty == in.Child.Novelty {
+		t.Fatal("identity was not decoded from the journal", id.Child, err)
+	}
+	// Rerun binds the driver to the decoded journal identity.
+	rerun := in
+	rerun.Child = id.Child
+	if err := r.validateChildExecution(rerun); err != nil {
+		t.Fatal("rerun refused its own child:", err)
+	}
+	if _, err := r.Resume(t.Context(), ResumeInput{RunID: in.RunID, Machine: in.Machine, GooberDigest: in.GooberDigest}); !errors.Is(err, invoke.ErrChildCustodyPending) {
+		t.Fatal("resume refused its own child:", err)
+	}
+	changed := *id.Child
+	novelty := *changed.Novelty
+	novelty.Distance = 0.5
+	changed.Novelty = &novelty
+	rerun.Child = &changed
+	if err := r.validateChildExecution(rerun); err == nil {
+		t.Fatal("driver accepted different pinned novelty")
+	}
 }

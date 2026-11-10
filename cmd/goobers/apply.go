@@ -6,6 +6,8 @@ import (
 	"io"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -56,7 +58,7 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

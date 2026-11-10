@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -302,8 +303,8 @@ func TestRunnerPreservesCommittedWorkAfterRestartBeforeInfrastructureRetry(t *te
 			Type: journal.EventError, Stage: "implement", Attempt: 1,
 			Error: &journal.ErrorDetail{Code: "executor_error", Message: "harness: no completion file written"},
 			Runner: map[string]any{
-				retryFailureClassKey:  string(journal.AttemptInfra),
-				infraCommittedWorkKey: true,
+				runsemantics.RetryFailureClassKey:  string(journal.AttemptInfra),
+				runsemantics.InfraCommittedWorkKey: true,
 			},
 		},
 	} {
@@ -399,8 +400,8 @@ func TestRunnerPreservesParallelBranchCommittedWorkAfterRestartBeforeInfrastruct
 			Type: journal.EventError, Stage: "implement", Branch: 1, Attempt: 1,
 			Error: &journal.ErrorDetail{Code: "executor_error", Message: "harness: no completion file written"},
 			Runner: map[string]any{
-				retryFailureClassKey:  string(journal.AttemptInfra),
-				infraCommittedWorkKey: true,
+				runsemantics.RetryFailureClassKey:  string(journal.AttemptInfra),
+				runsemantics.InfraCommittedWorkKey: true,
 			},
 		},
 	} {

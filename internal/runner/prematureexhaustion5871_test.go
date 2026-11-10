@@ -5,23 +5,11 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
-
-// The harness authors the rewrite; the runner decides its retry class and
-// telemetry its error class. The spellings must never drift apart.
-func TestPrematureExhaustionClaimCodeMatchesHarness(t *testing.T) {
-	if PrematureExhaustionClaimCode != harness.ErrorCodePrematureExhaustionClaim {
-		t.Fatalf("runner %q != harness %q", PrematureExhaustionClaimCode, harness.ErrorCodePrematureExhaustionClaim)
-	}
-	if class := telemetry.ClassifyError(PrematureExhaustionClaimCode); class != telemetry.ErrorClassValidation {
-		t.Fatalf("%s classifies as %q, want %q (an unbacked claim, not a timeout)", PrematureExhaustionClaimCode, class, telemetry.ErrorClassValidation)
-	}
-}
 
 // #5871: an agent that gave up claiming its window was exhausted, long before
 // the deadline, is sent back through the stage's own retry policy rather than
@@ -45,7 +33,7 @@ func TestRunnerRetriesPrematureExhaustionClaimPerPolicy(t *testing.T) {
 		{
 			Status: apiv1.ResultFailure,
 			Error: &apiv1.ErrorInfo{
-				Code:      PrematureExhaustionClaimCode,
+				Code:      runsemantics.PrematureExhaustionClaimCode,
 				Message:   "the agent reported EXECUTION_WINDOW_EXHAUSTED after 22s of its 30m0s execution window",
 				Retryable: true,
 			},

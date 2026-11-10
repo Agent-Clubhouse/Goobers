@@ -6,7 +6,9 @@ payload/.goobers/agent-toolkit/adapters/copilot.md
 payload/.goobers/agent-toolkit/api/schemas/agent-toolkit-manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/artifact-pointer.schema.json
 payload/.goobers/agent-toolkit/api/schemas/backprop-claim-v1.schema.json
+payload/.goobers/agent-toolkit/api/schemas/backprop-verification-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/candidate-findings-v1.schema.json
+payload/.goobers/agent-toolkit/api/schemas/cloud-readiness.schema.json
 payload/.goobers/agent-toolkit/api/schemas/config-source-action.schema.json
 payload/.goobers/agent-toolkit/api/schemas/diagnostics.schema.json
 payload/.goobers/agent-toolkit/api/schemas/explain.schema.json
@@ -47,6 +49,7 @@ payload/.goobers/agent-toolkit/api/schemas/stage-artifact-manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/stage-artifact-set.schema.json
 payload/.goobers/agent-toolkit/api/schemas/support-triage-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/verdict.schema.json
+payload/.goobers/agent-toolkit/api/schemas/workflow-gym-task.schema.json
 payload/.goobers/agent-toolkit/api/schemas/workflow.schema.json
 payload/.goobers/agent-toolkit/api/schemas/workspace-revision.schema.json
 payload/.goobers/agent-toolkit/config-examples/README.md

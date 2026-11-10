@@ -43,6 +43,7 @@ var builtinFlagShapes = map[string]map[string]flagKind{
 	"backlog-health":         {"feedback": boolFlag},
 	"backlog-query":          {"debug": boolFlag, "read-only": boolFlag, "claim": boolFlag, "resweep": boolFlag, "reconcile": boolFlag, "release": boolFlag},
 	"docs-churn":             {"since": valueFlag, "buffer-multiplier": valueFlag},
+	"fluid-ui-request":       {"load": boolFlag, "validate": boolFlag},
 	"gather-sibling-context": {"no-verdict-cache": boolFlag},
 	"remediation-checkpoint": {"budget": valueFlag, "escalate": optionalValueFlag, "escalation-outcome": valueFlag},
 	"respond-to-findings":    {"check": boolFlag},

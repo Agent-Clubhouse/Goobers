@@ -27,9 +27,8 @@ import (
 // before the field existed — decision 001 ruling 8's "unpinned gate"), every
 // automated and human gate (control-plane by definition, ruling 2; runsOn on
 // one is WF023), and every parallel. Emitting a row only for a DECLARED gate
-// is what keeps ruling 5 true by construction — every placed gate carries
-// cpu/memory — and keeps a config that validated clean before this field
-// existed validating clean after it.
+// lets the solver enforce explicit cpu/memory on distributed inventories
+// while treating missing resource minimums as advisory locally.
 //
 // Consumers key on StageRequirement.Stage (the name), never on position:
 // the run-start pin (bootstrap.PinStagePlacements) looks each row up by name
@@ -41,13 +40,14 @@ func StagePlacements(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn, goobers m
 	for _, stage := range stages {
 		effective := EffectiveRunsOn(stage, gaggleRunsOn)
 		requirements = append(requirements, runnersolve.StageRequirement{
-			Stage:        stage.Name,
-			OS:           effective.OS,
-			CPU:          effective.CPU,
-			Memory:       effective.Memory,
-			Disk:         effective.Disk,
-			Capabilities: EffectiveCapabilities(stage, gaggleRunsOn),
-			Restrictions: effective.Restrictions,
+			Stage:                   stage.Name,
+			RequireResourceMinimums: stage.Kind == stageKindGate,
+			OS:                      effective.OS,
+			CPU:                     effective.CPU,
+			Memory:                  effective.Memory,
+			Disk:                    effective.Disk,
+			Capabilities:            EffectiveCapabilities(stage, gaggleRunsOn),
+			Restrictions:            effective.Restrictions,
 		})
 	}
 	return requirements

@@ -1,0 +1,18 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 0 and seed 1 with 1 worker on 16 cores with 14553MB heap and 64MB offheap memory [pid: 122788] (Windows 11 10.0 amd64, Eclipse Adoptium 21.0.13 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file <MODEL_DIR>\TerminalRecovery.tla
+Parsing file <TLC_MODULE_DIR>\Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module TerminalRecovery
+Starting... (2026-11-05 17:14:46)
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 4 distinct states generated at 2026-11-05 17:14:46.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 2.0E-16
+140 states generated, 104 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 9.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 01s at (2026-11-05 17:14:46)

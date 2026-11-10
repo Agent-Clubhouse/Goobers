@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/workflow-gym-task.schema.json",
+  "title": "Workflow Gym task manifest",
+  "description": "A reproducible benchmark task in a versioned Workflow Gym dataset.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "taskId", "datasetVersion", "split", "provenance", "seed", "expectedOutcome", "evaluatorVersion", "retention", "licensing", "candidateEnvironment"],
+  "properties": {
+    "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "Version of the Workflow Gym task contract." },
+    "kind": { "const": "WorkflowGymTask", "description": "Manifest kind; always WorkflowGymTask." },
+    "taskId": { "type": "string", "minLength": 1, "description": "Unique stable identifier for this task within its dataset." },
+    "datasetVersion": { "type": "string", "minLength": 1, "description": "Immutable version shared by every task in this dataset." },
+    "split": { "type": "string", "enum": ["train", "eval", "holdout"], "description": "Explicit train, evaluation, or holdout assignment." },
+    "provenance": {
+      "type": "object",
+      "description": "Immutable source material from which the task was derived.",
+      "additionalProperties": false,
+      "required": ["source", "revision"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1, "description": "Repository, dataset, or other source identifier." },
+        "revision": { "type": "string", "minLength": 1, "description": "Immutable source revision or content digest." }
+      }
+    },
+    "seed": { "type": "integer", "description": "Deterministic seed used to prepare and evaluate the task." },
+    "generatorVersion": { "type": "string", "minLength": 1, "description": "Version of the pure generator that produced this task." },
+    "taskClass": { "type": "string", "enum": ["normal", "incomplete", "ambiguous", "contradictory", "timeout", "dependency-failure", "tool-corruption", "malicious", "adversarial"], "description": "Synthetic or adversarial task class." },
+    "constraints": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "description": "Closed, generator-defined constraints applied to this task." },
+    "minimalReproductionId": { "type": "string", "minLength": 1, "description": "Stable identifier for the smallest reproduction of this generated task." },
+    "expectedOutcome": { "type": "string", "minLength": 1, "description": "Outcome a successful candidate is expected to produce." },
+    "expectedFailureMode": { "type": "string", "minLength": 1, "description": "Optional failure mode the evaluator is expected to detect." },
+    "evaluatorVersion": { "type": "string", "minLength": 1, "description": "Pinned evaluator implementation version." },
+    "retention": {
+      "type": "object",
+      "description": "Retention constraints for task inputs and outputs.",
+      "additionalProperties": false,
+      "required": ["policy"],
+      "properties": {
+        "policy": { "type": "string", "minLength": 1, "description": "Named retention policy or duration." },
+        "retainUntil": { "type": "string", "format": "date", "description": "Optional last date on which retained material is allowed." }
+      }
+    },
+    "licensing": {
+      "type": "object",
+      "description": "License and attribution metadata for task material.",
+      "additionalProperties": false,
+      "required": ["license"],
+      "properties": {
+        "license": { "type": "string", "minLength": 1, "description": "SPDX expression or other unambiguous license identifier." },
+        "attribution": { "type": "string", "description": "Optional attribution required when using the task material." }
+      }
+    },
+    "candidateEnvironment": {
+      "type": "object",
+      "description": "Pinned environment manifest presented to benchmark candidates.",
+      "additionalProperties": false,
+      "required": ["image"],
+      "properties": {
+        "image": { "type": "string", "minLength": 1, "description": "Immutable image reference, including a digest or equivalent version pin." },
+        "os": { "type": "string", "description": "Optional operating system identifier." },
+        "architecture": { "type": "string", "description": "Optional CPU architecture identifier." },
+        "environment": { "type": "object", "description": "Non-secret environment values supplied to the candidate.", "additionalProperties": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -161,12 +161,12 @@ func TestGuardedCredentialPathsIgnoresNonFileRefs(t *testing.T) {
 
 func TestGuardedCredentialPathsIncludeControllerAndTLSKeys(t *testing.T) {
 	cfg := &Config{
-		API:          APIConfig{PodTokenKeyFile: "  /private/controller.key  ", TLS: &APITLSConfig{KeyFile: "/private/api.key", CertFile: "/public/api.crt"}},
+		API:          APIConfig{PodTokenKeyFile: "  /private/controller.key  ", PodTokenKeyRingFile: "  /private/keyring.json  ", TLS: &APITLSConfig{KeyFile: "/private/api.key", CertFile: "/public/api.crt"}},
 		Engine:       &EngineConfig{TLS: &temporaldial.TLS{KeyFile: "/private/temporal.key", CertFile: "/public/temporal.crt"}},
 		Telemetry:    TelemetryConfig{OTLP: &OTLPConfig{TLS: &OTLPTLSConfig{KeyFile: "/private/otlp.key", CertFile: "/public/otlp.crt", CAFile: "/public/ca.crt"}}},
 		SecretStores: []SecretStoreConfig{{Name: "local", Kind: SecretStoreKindFileKey, Directory: "/private/wrapping-keys"}},
 	}
-	want := []string{"/private/api.key", "/private/controller.key", "/private/otlp.key", "/private/temporal.key", "/private/wrapping-keys"}
+	want := []string{"/private/api.key", "/private/controller.key", "/private/keyring.json", "/private/otlp.key", "/private/temporal.key", "/private/wrapping-keys"}
 	if got := GuardedCredentialPaths(cfg); !reflect.DeepEqual(got, want) {
 		t.Fatalf("private key inventory=%v want %v", got, want)
 	}

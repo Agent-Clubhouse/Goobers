@@ -130,11 +130,14 @@ func publicationGit(ctx context.Context, directory string, environment []string,
 	return stdout.String(), nil
 }
 
-type publicationOutput struct{ bytes.Buffer }
+type publicationOutput struct{ buf bytes.Buffer }
+
+func (b *publicationOutput) String() string { return b.buf.String() }
+func (b *publicationOutput) Len() int       { return b.buf.Len() }
 
 func (b *publicationOutput) Write(data []byte) (int, error) {
 	if b.Len()+len(data) > 16<<10 {
 		return 0, errors.New("child publication git output exceeds bound")
 	}
-	return b.Buffer.Write(data)
+	return b.buf.Write(data)
 }

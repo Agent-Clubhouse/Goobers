@@ -94,6 +94,8 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-contract-test",
 		"portal-package",
 		"portal-package-test",
+		"deepcopy-generate",
+		"deepcopy-diff",
 		"manifests-generate",
 		"manifests-diff",
 	}
@@ -144,7 +146,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	// git.exe cannot find its libexec helpers on Windows (see the comment at the
 	// construction site, and PR #3461 where every contract failed at `git init`
 	// on windows-latest).
-	wantShippedArgs := []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}
+	wantShippedArgs := []string{"test", "-json", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}
 	if shippedCheck.label != "shipped-workflows" ||
 		!reflect.DeepEqual(shippedCheck.args, wantShippedArgs) {
 		t.Fatalf("shipped workflow check = %#v, want args %q", shippedCheck, wantShippedArgs)
@@ -355,7 +357,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check ci-policy runtime-acquisitions architecture-imports tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet portal-embed-test shipped-workflows release-image-probes schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test portal-package portal-package-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check ci-policy runtime-acquisitions architecture-imports tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet portal-embed-test shipped-workflows release-image-probes schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test portal-package portal-package-test deepcopy-generate deepcopy-diff manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -630,7 +632,7 @@ func TestManifestsDriftGuardRunsGitDiff(t *testing.T) {
 		t.Errorf("manifests-generate command = %q, want go", generate.command)
 	}
 	if want := []string{
-		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3",
 		"crd:allowDangerousTypes=true", "paths=./api/v1alpha1/...", "output:crd:dir=config/crd/bases",
 	}; !reflect.DeepEqual(generate.args, want) {
 		t.Errorf("manifests-generate args = %q, want %q", generate.args, want)
@@ -641,6 +643,30 @@ func TestManifestsDriftGuardRunsGitDiff(t *testing.T) {
 	}
 	if want := []string{"diff", "--exit-code", "--", "config/crd/bases"}; !reflect.DeepEqual(guard.args, want) {
 		t.Errorf("manifests-diff args = %q, want %q", guard.args, want)
+	}
+}
+
+func TestDeepcopyDriftGuardRunsAfterPinnedGeneration(t *testing.T) {
+	t.Parallel()
+	got := checks([]string{"goobers"}, toolchain{goCommand: "custom-go", gitCommand: "custom-git"}, buildMetadata{}, "linux", "")
+	generateIdx := slices.IndexFunc(got, func(current check) bool { return current.label == "deepcopy-generate" })
+	diffIdx := slices.IndexFunc(got, func(current check) bool { return current.label == "deepcopy-diff" })
+	if generateIdx < 0 || diffIdx != generateIdx+1 {
+		t.Fatal("deepcopy generation must immediately precede its drift guard")
+	}
+	generate, diff := got[generateIdx], got[diffIdx]
+	if generate.command != "custom-go" || !reflect.DeepEqual(generate.args, []string{
+		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3", "object", "paths=./api/v1alpha1/...",
+	}) {
+		t.Fatalf("unexpected generator: %+v", generate)
+	}
+	if diff.command != "custom-git" || !reflect.DeepEqual(diff.args, []string{
+		"diff", "--exit-code", "--", "api/v1alpha1/zz_generated.deepcopy.go",
+	}) {
+		t.Fatalf("unexpected drift guard: %+v", diff)
+	}
+	if generate.group != groupChecks || diff.group != groupChecks {
+		t.Fatal("deepcopy regeneration and drift check must run in the checks job")
 	}
 }
 

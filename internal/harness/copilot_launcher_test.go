@@ -37,7 +37,7 @@ func TestCopilotPreflightProbesCompleteLauncherPrefix(t *testing.T) {
 	}
 	want := [][]string{
 		append(append([]string(nil), resolveHarnessCommand(original)...), "version", "--short"),
-		append(append([]string(nil), resolveHarnessCommand(original)...), "auth", "status", copilotNoRemoteExportFlag),
+		withCopilotHostSafety(append(append([]string(nil), resolveHarnessCommand(original)...), "auth", "status", copilotNoRemoteExportFlag)),
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("preflight checked a different launcher than dispatch: got %q, want %q", calls, want)
@@ -534,6 +534,7 @@ func TestLauncherWithoutHandshakeUsesVerifiedAdapterManagedFallback(t *testing.T
 	var contractProbes int
 	adapter := &CopilotAdapter{
 		Command:                     []string{program, "forwarding-launcher"},
+		ModelCredential:             func(context.Context) (string, error) { return "fixture-model-token", nil },
 		RequireLauncherContract:     true,
 		AllowAdapterManagedFallback: true,
 		VerifyAdapterManagedSession: true,

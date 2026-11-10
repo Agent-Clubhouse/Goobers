@@ -42,20 +42,25 @@ const ReceiptFileName = "input-inspection-receipts.jsonl"
 // materializeContext.
 type Config struct {
 	// ChildWorkflows is delivered by the trusted stage launcher, never DSL input.
-	ChildWorkflows       *ChildWorkflowAccess `json:"childWorkflows,omitempty"`
-	Workspace            string               `json:"workspace"`
-	ArtifactFile         string               `json:"artifactFile,omitempty"`
-	ArtifactManifestFile string               `json:"artifactManifestFile,omitempty"`
+	ChildWorkflows *ChildWorkflowAccess `json:"childWorkflows,omitempty"`
+	// Decide is the trusted launcher's grant of the decision-model tool; never DSL input.
+	Decide               *DecideAccess `json:"decide,omitempty"`
+	Workspace            string        `json:"workspace"`
+	ArtifactFile         string        `json:"artifactFile,omitempty"`
+	ArtifactManifestFile string        `json:"artifactManifestFile,omitempty"`
 	// PublicationSchemas are the stage's own schema-bound application/json
 	// artifact slots. publish_output refuses a manifest whose payload for any
 	// of these slots is absent, malformed, or violates its schema (#6868).
 	PublicationSchemas []PublicationSchema `json:"publicationSchemas,omitempty"`
-	ReceiptFile        string              `json:"receiptFile,omitempty"`
-	Inputs             map[string]string   `json:"inputs,omitempty"`
-	RunID              string              `json:"runId"`
-	WorkflowID         string              `json:"workflowId"`
-	TaskID             string              `json:"taskId"`
-	Gaggle             string              `json:"gaggle"`
+	// PublicationReceiptFile is the workspace-relative JSONL log of
+	// schema-bound publish_output outcomes the harness journals (#6868).
+	PublicationReceiptFile string            `json:"publicationReceiptFile,omitempty"`
+	ReceiptFile            string            `json:"receiptFile,omitempty"`
+	Inputs                 map[string]string `json:"inputs,omitempty"`
+	RunID                  string            `json:"runId"`
+	WorkflowID             string            `json:"workflowId"`
+	TaskID                 string            `json:"taskId"`
+	Gaggle                 string            `json:"gaggle"`
 }
 
 // LoadConfig reads and validates a config file at path.
@@ -76,6 +81,11 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	if cfg.Decide != nil {
+		if err := cfg.Decide.Validate(); err != nil {
+			return Config{}, err
+		}
+	}
 	if _, err := compilePublicationSchemas(cfg.PublicationSchemas); err != nil {
 		return Config{}, fmt.Errorf("mcpio: config %s: %w", path, err)
 	}
@@ -86,6 +96,11 @@ func LoadConfig(path string) (Config, error) {
 // Called from the harness side (internal/harness), not by this server
 // itself. See WriteJSON for the symlink-safety rationale.
 func WriteConfig(root, rel string, cfg Config) (string, error) {
+	if cfg.Decide != nil {
+		if err := cfg.Decide.Validate(); err != nil {
+			return "", err
+		}
+	}
 	if cfg.ChildWorkflows != nil {
 		if err := cfg.ChildWorkflows.Validate(cfg.RunID); err != nil {
 			return "", err

@@ -196,6 +196,46 @@ The lifecycle is only worth something if the durations are promised, not vibes. 
   only when that tagged matrix already marks it `deprecated`; adding both transitions in one change
   does not satisfy the released-minor window. Before the first tag, no version may become unsupported.
 
+#### 3.3.2 Graduation from preview to supported
+
+Graduation is an explicit release decision, not a consequence of elapsed preview time.
+The lock PR must include the following reviewable evidence:
+
+1. **Scope and acceptance:** name the language surface being frozen and account for every
+   version-specific acceptance criterion. For DSL 3.0 the checklist is
+   [`dsl-3.0.md` §9](./dsl-3.0.md#9-acceptance-criteria-falsifiable), all ten items,
+   including migration and journal conformance, old-interpreter stability, placement and
+   admission diagnostics, instance-schema compatibility, cross-runner handoff, partial
+   daemon readiness, and the canonical migrator fixture table. Link test or smoke results;
+   an unverified criterion remains a release blocker, not an implied pass.
+2. **Resolved semantics:** record implementation decisions for the design's open points;
+   explicitly identify any remaining release-blocking decisions and their owners.
+3. **Isolation and freeze:** isolate the next preview interpreter from the graduating
+   interpreter, retain compiled/semantic golden fixtures, and introduce the frozen
+   digest acknowledgement guard and `PATCH_LOG.json` initial record. Future changes
+   must be contract-preserving patches; new semantics belong in the next version.
+4. **Upgrade safety:** test existing workflow pins and workflow-less objects with the
+   proposed matrix, including removed legacy gaggle fields. Verify migration tooling,
+   explicit pins in newly authored workflows, and preview opt-in for the next version.
+5. **Release consistency:** append `{supported, <release>}` to the existing support
+   history, preserve released transitions, and regenerate feature matrices, CLI/man
+   documentation, fixtures and release smoke expectations. The support-policy checks
+   must pass against the released baseline.
+6. **Approval:** keep the lock PR in draft until the product owner accepts the scope and
+   evidence. Only merging that approved lock declares the language supported. A docs
+   or preparation PR does not graduate it or deprecate the preceding version.
+
+**DSL 3.0 / v0.6.0 scope.** The proposed freeze covers the Goobernetes language in
+[`dsl-3.0.md`](./dsl-3.0.md): `runsOn`, runner inventory, explicit repository handoff,
+and its delivered migration/admission contract. The provider access layer
+[#5749](https://github.com/Agent-Clubhouse/Goobers/issues/5749)–
+[#5754](https://github.com/Agent-Clubhouse/Goobers/issues/5754) and
+[milestone #38](https://github.com/Agent-Clubhouse/Goobers/milestone/38) move to the
+**DSL 3.x** roadmap; they are not prerequisites of the 3.0 lock. Their eventual
+language version and compatibility changes require their own design and release
+review. DSL 3.x is the forward authoring/migration path; existing 2.0 pins keep their
+support-window guarantees and are not silently upgraded.
+
 ### 3.4 Multi-version runtime coexistence — N interpreters in one binary
 
 This is the load-bearing idea and the one the current epic doesn't have. "Supported means it works
@@ -386,10 +426,18 @@ interpreter *stayed* frozen.
   declare. Feature-support checks fan out one probe per distinct pin
   (`workflow.FeatureDefinitionsByDSLVersion` — shared by `api/validate` and
   `goobers features --used`), so a gaggle-scoped feature must be supported at *every* pin present.
-  An object with no workflows at all resolves at the newest `supported` version from the
-  `SupportMatrix` — deliberately not the transitional default, which is deprecated and would strand
-  the author with an unactionable migration error (no field to edit) the moment it turns
-  unsupported.
+  An object with no workflows resolves at the **oldest still-supported** version
+  from the `SupportMatrix`. This compatibility baseline preserves legacy gaggle
+  `requiredCapabilities` when 3.0 graduates; graduation cannot silently migrate an
+  object that has no pin to edit. Preview, deprecated and unsupported versions are
+  excluded. When 2.0 leaves `supported`, the baseline advances to the next supported
+  version: release/migration guidance must tell workflow-less gaggle owners to migrate
+  `requiredCapabilities` to `runsOn` before that transition. Existing workflow pins
+  still govern their objects, including deprecated pins during their support window.
+  A gaggle floor must satisfy every workflow pin: `runsOn` is rejected alongside a
+  2.0 workflow, and legacy `requiredCapabilities` is rejected alongside a 3.0 workflow.
+  New authoring remains separate: the authoring stamp follows `NewestSupported()`
+  (3.0 after graduation), and newly authored workflows carry explicit DSL pins.
 - **8.5 Interaction with run-pinning (WF-016).** A run already pins a compiled machine + digest for
   life. Confirm the version router sits *before* that pin (compile-time), so an in-flight run is
   wholly unaffected by a support-level change mid-flight.

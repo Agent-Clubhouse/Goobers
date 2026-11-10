@@ -8,264 +8,792 @@
       "name": "gaggle.spec.backlog",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "gaggle.spec.backlog.labels",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "gaggle.spec.backlog.provider.github",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "gaggle.spec.displayName",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "gaggle.spec.isolation.namespace",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "gaggle.spec.project",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "gaggle.spec.project.provider.github",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.capabilities",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.displayName",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.gaggle",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.harness.copilot",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.harnessOptions",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.instructions",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.model",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.role",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.scaleFactor",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.skills",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.tools",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "goober.spec.workflows",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "stage.resultFile",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "stage.run.command",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "stage.run.workspace.repo",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "stage.shell",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.agentic",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.capabilities",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.deterministic",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.expectedOutputs",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.goal",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.goober",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.inputs",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.name",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.next",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.onTimeout.fail",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "task.policyActions",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "trigger.schedule",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.spec.displayName",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.spec.gaggle",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.spec.readiness",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.spec.readiness.maxConcurrentRuns",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.spec.readiness.maxRunsPerHour",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.spec.start",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.spec.tasks",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.spec.triggers",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     },
     {
       "name": "workflow.terminal.complete",
       "stability": "ga",
       "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ],
       "used": true
     }
   ]

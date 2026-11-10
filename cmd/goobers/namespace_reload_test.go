@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -53,9 +55,9 @@ func TestNamespaceReloadPreservesInFlightRunBranches(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			origin := initBareOrigin(t)
-			previousCloneURL := repoCloneURL
-			repoCloneURL = func(apiv1.RepoRef) (string, error) { return origin, nil }
-			t.Cleanup(func() { repoCloneURL = previousCloneURL })
+			previousCloneURL := runtimewiring.RepoCloneURL
+			runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return origin, nil }
+			t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 			layout := instance.NewLayout(t.TempDir())
 			if err := layout.EnsureGaggleRuntime("example"); err != nil {
 				t.Fatal(err)

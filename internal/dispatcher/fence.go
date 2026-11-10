@@ -154,6 +154,9 @@ func priorAttempt(pod *corev1.Pod, attempt Attempt, current int) (Attempt, bool)
 		return Attempt{}, false
 	}
 	prior := Attempt{RunID: attempt.RunID, Stage: attempt.Stage}
+	if !sameFanOutOccurrence(pod, attempt) {
+		return Attempt{}, false
+	}
 	var err error
 	if prior.Number, err = strconv.Atoi(pod.Labels[LabelAttempt]); err != nil {
 		return Attempt{}, false
@@ -163,6 +166,14 @@ func priorAttempt(pod *corev1.Pod, attempt Attempt, current int) (Attempt, bool)
 		return Attempt{}, false
 	}
 	return prior, prior.IdentityAttempt() < current
+}
+
+func sameFanOutOccurrence(pod *corev1.Pod, attempt Attempt) bool {
+	if attempt.FanOutVisit == 0 && attempt.FanOutBranch == 0 {
+		return pod.Labels[LabelFanOutVisit] == "" && pod.Labels[LabelFanOutBranch] == ""
+	}
+	return pod.Labels[LabelFanOutVisit] == strconv.FormatUint(attempt.FanOutVisit, 10) &&
+		pod.Labels[LabelFanOutBranch] == strconv.Itoa(attempt.FanOutBranch)
 }
 
 // podPhysicalAttempt reads a pod's optional physical attempt label; zero

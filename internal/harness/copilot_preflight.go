@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -109,38 +108,21 @@ func (c *CopilotAdapter) authPreflightPlan(contract launcherContract) ([]string,
 	return args, verifyAdapterManagedSession, nil
 }
 
-// prepareCopilotPreflightEnvironment isolates the authentication probe from
-// ambient extensions, plugins, MCP servers, hooks, and instructions. When no
-// explicit model token is available, config.json is copied so the CLI can
-// still use its stored login without inheriting the rest of the user profile.
-func prepareCopilotPreflightEnvironment(env []string, seedStoredAuth bool) ([]string, string, func(), error) {
-	ambientHome, hasAmbientHome := copilotConfigHome(env)
+// prepareCopilotPreflightEnvironment uses a private working directory for the
+// probe. With an explicit token it also isolates CLI state. Without one it
+// retains the existing login home: copying config.json can duplicate renewable
+// login state and importing it would also import unrelated CLI configuration.
+func prepareCopilotPreflightEnvironment(env []string, storedAuth bool) ([]string, string, func(), error) {
 	home, err := os.MkdirTemp("", copilotPreflightHomePrefix)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("create isolated Copilot preflight home: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(home) }
-
-	if seedStoredAuth && hasAmbientHome {
-		source := filepath.Join(ambientHome, copilotConfigFileName)
-		data, readErr := os.ReadFile(source)
-		switch {
-		case readErr == nil:
-			if err := os.WriteFile(filepath.Join(home, copilotConfigFileName), data, 0o600); err != nil {
-				cleanup()
-				return nil, "", nil, fmt.Errorf("seed isolated Copilot preflight authentication: %w", err)
-			}
-		case !os.IsNotExist(readErr):
-			cleanup()
-			return nil, "", nil, fmt.Errorf("read stored Copilot authentication: %w", readErr)
-		}
+	if storedAuth {
+		warnCopilotStoredAuth()
+		return env, home, cleanup, nil
 	}
-
-	env = overrideEnv(env, "COPILOT_HOME", home)
-	env = removeEnvironment(env, copilotWorkspaceMCPEnv)
-	env = removeEnvironment(env, copilotPluginDirOnlyEnv)
-	env = append(env, copilotPluginDirOnlyEnv+"=true")
-	return env, home, cleanup, nil
+	return isolatedCopilotHomeEnv(env, home), home, cleanup, nil
 }
 
 func shouldRetryCopilotLauncherAuthProbe(ctx context.Context, result ProcessResult, runErr error, launcherProbe bool) bool {
@@ -230,4 +212,14 @@ func copilotAuthProbeLooksLikeCredentialFailure(transcript []byte) bool {
 		}
 	}
 	return false
+}
+
+func warnCopilotStoredAuth() {
+	_, _ = fmt.Fprintln(os.Stderr, "warning: harness: copilot-cli: no scoped agent:model credential; preserving the existing Copilot login home with reduced configuration isolation. Configure agent:model with an environment or keychain tokenRef for isolated stages. Enforced sandbox and declared-MCP stages never fall back to this home.")
+}
+
+func (c *CopilotAdapter) warnUnprobedStoredAuth(authCheckArgs []string) {
+	if len(authCheckArgs) == 0 && c.ModelCredential == nil && ambientCopilotToken() == "" {
+		warnCopilotStoredAuth()
+	}
 }

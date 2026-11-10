@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -22,5 +23,14 @@ func TestSnapshotPathBudgetFailsWithoutPartialWrite(t *testing.T) {
 
 	if n, err := writer.Write(data); n != 0 || !errors.Is(err, errSnapshotPathListTooLarge) {
 		t.Fatalf("oversized write = %d, %v; want 0, %v", n, err, errSnapshotPathListTooLarge)
+	}
+}
+
+func TestWriteExistingSnapshotPathsNamesInvalidPath(t *testing.T) {
+	const path = "../outside"
+
+	_, err := writeExistingSnapshotPaths(t.TempDir(), []byte(path+"\x00"), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("invalid path error = %v; want offending path", err)
 	}
 }

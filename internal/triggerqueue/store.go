@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`, childSchema, childAuthoritySchema, childProposalSchema, childStorageSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, childPublicationSchema, directEngineSchema, sourceStartSchema, sourceCursorSchema, scheduleDemandSchema, sourceRevisionSchema, pendingSweepSchema, scheduleOccurrenceDemandSchema, sourceOccurrenceSchema}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childStorageSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, childPublicationSchema, directEngineSchema, sourceStartSchema, sourceCursorSchema, scheduleDemandSchema, sourceRevisionSchema, pendingSweepSchema, scheduleOccurrenceDemandSchema, sourceOccurrenceSchema, childAdmissionSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
@@ -313,7 +313,9 @@ func (s *Store) Finish(ctx context.Context, id string, state State, runID, reaso
 	if (state != Dispatched && state != Rejected) || len(runID) > 256 || len(reason) > 1024 || now.IsZero() || (state == Rejected && runID != "") {
 		return ErrTransition
 	}
-	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET state=?,run_id=?,reason=?,finished_ns=? WHERE id=? AND state='dispatching' AND accepted_ns<=?", state, runID, reason, now.UnixNano(), id, now.UnixNano())
+	// Wall-clock corrections must not strand a definite outcome in dispatching
+	// or make its replay-retention window begin before acceptance.
+	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET state=?,run_id=?,reason=?,finished_ns=MAX(?,accepted_ns) WHERE id=? AND state='dispatching'", state, runID, reason, now.UnixNano(), id)
 	return changed(result, err)
 }
 

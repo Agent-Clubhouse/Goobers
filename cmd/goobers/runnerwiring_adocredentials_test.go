@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
@@ -74,9 +76,9 @@ func (s adoTestIdentitySource) Credential(context.Context) (providers.ADOCredent
 
 func stubADOCredentialSource(t *testing.T, build func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error)) {
 	t.Helper()
-	previous := newADOCredentialSource
-	newADOCredentialSource = build
-	t.Cleanup(func() { newADOCredentialSource = previous })
+	previous := runtimewiring.NewADOCredentialSource
+	runtimewiring.NewADOCredentialSource = build
+	t.Cleanup(func() { runtimewiring.NewADOCredentialSource = previous })
 }
 
 func registeredStrings(r *escTestRegistrar) map[string]bool {
@@ -158,7 +160,7 @@ func TestBuildCredentialsADOEveryKindBacksRepoGrants(t *testing.T) {
 			}
 			sourceRegistrar := &escTestRegistrar{}
 			cfg := &instance.Config{Repos: []instance.RepoRef{tc.repo}}
-			resolver, grants, err := buildCredentials(cfg, tc.stores, adoTestOwner, adoTestName, nil, sourceRegistrar)
+			resolver, grants, err := runtimewiring.BuildCredentials(cfg, tc.stores, adoTestOwner, adoTestName, nil, sourceRegistrar)
 			if err != nil {
 				t.Fatalf("buildCredentials: %v", err)
 			}
@@ -233,7 +235,7 @@ func TestBuildCredentialsDefersADOWorkloadIdentityConstruction(t *testing.T) {
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{repo}}
 	for _, displayPath := range []credentials.SecretRegistrar{nil, &escTestRegistrar{}} {
-		resolver, grants, err := buildCredentials(cfg, nil, adoTestOwner, adoTestName, nil, displayPath)
+		resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, adoTestOwner, adoTestName, nil, displayPath)
 		if err != nil {
 			t.Fatalf("buildCredentials: %v, want construction deferred to first mint", err)
 		}
@@ -260,7 +262,7 @@ func TestADORepositoryTokenSourceRetriesAFailedConstruction(t *testing.T) {
 			Kind: providers.ADOCredentialKindBearer, Secret: "entra-late-token-0123456789", ExpiresAt: time.Now().Add(time.Hour),
 		}}, nil
 	})
-	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthManagedIdentity}, instance.TokenRef{}), nil, nil)
+	mint, err := runtimewiring.NewADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthManagedIdentity}, instance.TokenRef{}), nil, nil)
 	if err != nil {
 		t.Fatalf("newADORepositoryTokenSource: %v", err)
 	}
@@ -311,7 +313,7 @@ func TestADORepositoryTokenSourceCarriesAzureCLIFailureClassification(t *testing
 			stubADOCredentialSource(t, func(repo instance.RepoRef, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
 				return adoauth.Source(repo, adoTestFailingAzureRunner{out: tc.out}, stores)
 			})
-			mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI}, instance.TokenRef{}), nil, nil)
+			mint, err := runtimewiring.NewADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI}, instance.TokenRef{}), nil, nil)
 			if err != nil {
 				t.Fatalf("newADORepositoryTokenSource: %v", err)
 			}
@@ -380,7 +382,7 @@ func TestADORepositoryTokenSourceRefreshesBelowTheDeliveryFloor(t *testing.T) {
 				return adoTestIdentitySource{credential: tc.rebuilt}, nil
 			})
 			registrar := &escTestRegistrar{}
-			mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), registrar, nil)
+			mint, err := runtimewiring.NewADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), registrar, nil)
 			if err != nil {
 				t.Fatalf("newADORepositoryTokenSource: %v", err)
 			}
@@ -434,7 +436,7 @@ func TestADORepositoryTokenSourceKeepsTheHeldTokenWhenARefreshFails(t *testing.T
 			}}, nil
 		}
 	})
-	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	mint, err := runtimewiring.NewADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
 	if err != nil {
 		t.Fatalf("newADORepositoryTokenSource: %v", err)
 	}
@@ -472,7 +474,7 @@ func TestADORepositoryTokenSourceDoesNotRepeatAnUnhelpfulRefresh(t *testing.T) {
 			Kind: providers.ADOCredentialKindBearer, Secret: "entra-short-token-0123456789", ExpiresAt: short,
 		}}, nil
 	})
-	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	mint, err := runtimewiring.NewADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
 	if err != nil {
 		t.Fatalf("newADORepositoryTokenSource: %v", err)
 	}
@@ -497,7 +499,7 @@ func TestADORepositoryTokenSourceKeepsATokenAboveTheDeliveryFloor(t *testing.T) 
 			Kind: providers.ADOCredentialKindBearer, Secret: "entra-long-token-0123456789", ExpiresAt: time.Now().Add(time.Hour),
 		}}, nil
 	})
-	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	mint, err := runtimewiring.NewADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
 	if err != nil {
 		t.Fatalf("newADORepositoryTokenSource: %v", err)
 	}
@@ -518,7 +520,7 @@ func TestADOBasicHeaderIsRedactedFromJournalWrites(t *testing.T) {
 	t.Setenv("EXAMPLE_ADO_PAT", "journal-pat-value-0123456789")
 	registry := journal.NewRegistryScrubber()
 	cfg := &instance.Config{Repos: []instance.RepoRef{adoTestRepo(nil, instance.TokenRef{Env: "EXAMPLE_ADO_PAT"})}}
-	resolver, grants, err := buildCredentials(cfg, nil, adoTestOwner, adoTestName, nil, registry)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, adoTestOwner, adoTestName, nil, registry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +579,7 @@ func TestBuildCredentialsKeepsADOIdentityReferenceReposOnTheGaggleSource(t *test
 		{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: identityRef.Name},
 		{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: patRef.Name},
 	}
-	_, grants, err := buildCredentials(cfg, nil, adoTestOwner, adoTestName, additional, nil)
+	_, grants, err := runtimewiring.BuildCredentials(cfg, nil, adoTestOwner, adoTestName, additional, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +714,7 @@ func TestADOCIPollResolvesAStoreBackedPAT(t *testing.T) {
 		adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthPAT}, instance.TokenRef{Store: "example-kv/ado-pat"}),
 	}}
 	stores := wiringFakeStoreResolver{"example-kv/ado-pat": "store-pat-value-0123456789"}
-	resolver, grants, err := buildCredentials(cfg, stores, adoTestOwner, adoTestName, nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, stores, adoTestOwner, adoTestName, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,7 +722,7 @@ func TestADOCIPollResolvesAStoreBackedPAT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, nil, stores)
+	exec, err := runtimewiring.BuildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, nil, stores)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}

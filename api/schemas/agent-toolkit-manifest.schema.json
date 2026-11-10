@@ -11,6 +11,7 @@
     "bundleVersion",
     "producer",
     "dslVersions",
+    "features",
     "ownership",
     "assets",
     "adapters",
@@ -33,6 +34,12 @@
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/dslVersion" }
+    },
+    "features": {
+      "description": "DSL feature runtime support exported for repository agents.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/featureSupport" }
     },
     "ownership": {
       "type": "object",
@@ -76,6 +83,30 @@
     }
   },
   "$defs": {
+    "featureSupport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "runtimes"],
+      "properties": {
+        "id": { "description": "Stable author-facing feature identifier.", "type": "string", "minLength": 1 },
+        "runtimes": {
+          "description": "Support of this feature on each execution runtime.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["runtime", "level", "since"],
+            "properties": {
+              "runtime": { "description": "Execution runtime.", "type": "string", "enum": ["runner", "engine"] },
+              "level": { "description": "Whether the runtime implements the feature.", "type": "string", "enum": ["supported", "unsupported"] },
+              "since": { "description": "Application version that introduced this runtime declaration.", "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
     "dslVersion": {
       "type": "object",
       "additionalProperties": false,

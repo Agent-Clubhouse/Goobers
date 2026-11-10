@@ -69,6 +69,7 @@ export interface TriggerRequest {
   requestId?: string;
   force?: boolean;
   sourceRun?: string;
+  workItemId?: string;
 }
 
 export interface TriggerResponse {
@@ -1076,6 +1077,10 @@ export interface RunLineage {
     source?: string;
   }>;
   historicalRepassCount: number;
+  historicalRepassCountPartial?: boolean;
+  continuationsTruncated?: boolean;
+  continuationsNextCursor?: string;
+  continuationsIncomplete?: boolean;
 }
 
 export interface LineageRun {
@@ -1167,6 +1172,39 @@ export interface ChildPublicationHistory {
   items: ChildPublicationItem[];
 }
 
+/** Advisory admission-time cluster evidence; it grants no workflow authority. */
+export interface ChildNovelty {
+  scored: boolean;
+  reason?: string;
+  modelId?: string;
+  modelVersion?: string;
+  featureVersion?: string;
+  clusterId?: string;
+  nearest?: string;
+  nearestMedoid?: string;
+  nearestSize?: number;
+  nearestStable?: boolean;
+  distance: number;
+  outOfDistribution: boolean;
+  historicalOutcome?: {
+    runCount: number;
+    successRate: number;
+    insufficientRuns: boolean;
+  };
+  humanApprovalRequired?: boolean;
+  humanApproval?: { actor: string; approvedAt: string };
+}
+
+/** A queued child's durable human-admission hold. Decisions are made with the operator CLI. */
+export interface ChildAdmissionHistory {
+  state: "pending" | "approved" | "rejected";
+  reason: string;
+  requestedAt: string;
+  decidedAt?: string;
+  actor?: string;
+  novelty?: ChildNovelty;
+}
+
 export interface ChildHistoryItem {
   childId: string;
   runId: string;
@@ -1180,6 +1218,7 @@ export interface ChildHistoryItem {
   expiredAt?: string;
   cancellationRequested: boolean;
   publication?: ChildPublicationHistory;
+  admission?: ChildAdmissionHistory;
 }
 
 export interface ChildHistoryPage {
@@ -1194,7 +1233,12 @@ export interface ChildHistoryPage {
 
 export interface ChildActivity {
   status: "recorded" | "unavailable";
-  parent?: { runId: string; workflow: string; stageOccurrence: string };
+  parent?: {
+    runId: string;
+    workflow: string;
+    stageOccurrence: string;
+    novelty?: ChildNovelty;
+  };
   waits: Array<{ runId: string; stage: string; branch: number; action: "wait" | "merge" | "replace" | "discard"; since: string; sequence: number }>;
   parked: boolean;
 }
@@ -1759,6 +1803,74 @@ export interface TelemetryStatsResult {
   trendPrevious?: TelemetryTrendBucket;
   /** The instance's published Backprop attribution accuracy eval, when one exists. */
   attributionEval?: AttributionEvalSummary;
+  attributionCohorts?: AttributionCohort[];
+  faultAudit?: AttributionFaultAudit;
+}
+
+export interface AttributionEvidenceLink {
+  runId?: string;
+  nodeId?: string;
+  stage?: string;
+  detail?: string;
+  source?: string;
+  journalSequence?: number;
+  journalPath?: string;
+  artifactPath?: string;
+  artifactDigest?: string;
+  artifactMediaType?: string;
+}
+
+export interface AttributionCohort {
+  effectiveVersion?: string;
+  workload?: string;
+  runCount: number;
+  topContributingPaths?: {
+    nodes?: string[];
+    share: number;
+    score?: number;
+    confidence: number;
+    evidence?: AttributionEvidenceLink[];
+  }[];
+  counterEvidence?: AttributionEvidenceLink[];
+  groundTruth?: {
+    labeledRunCount: number;
+    correctRunCount: number;
+    incorrectRunCount: number;
+  };
+}
+
+export interface AttributionFaultFinding {
+  id: string;
+  signature: string;
+  domain: string;
+  confidence: number;
+  runIds: string[];
+  workflows: string[];
+  effectiveVersions: string[];
+  environments?: string[];
+  nodePaths?: string[][];
+  evidence?: AttributionEvidenceLink[];
+  counterEvidence?: string[];
+  rationale: string;
+  alternativeDomains: string[];
+  recommendedOwner: string;
+  recommendedAction: string;
+  verification: string;
+  fileable: boolean;
+}
+
+export interface AttributionFaultAudit {
+  schema: string;
+  mode: string;
+  since: string;
+  until: string;
+  observationsScanned: number;
+  productReliabilityFindings?: AttributionFaultFinding[];
+  externalFindings?: AttributionFaultFinding[];
+  workflowFindings?: AttributionFaultFinding[];
+  mixedOrUnknownFindings?: AttributionFaultFinding[];
+  suppressed: number;
+  truncated?: boolean;
 }
 
 export interface AttributionEvalSummary {
@@ -2172,6 +2284,331 @@ export interface RelatedWorkItem {
   url?: string;
 }
 
+/** One clustered workflow: its id and structural feature values. */
+export interface LabsClusterPoint {
+  id: string;
+  numeric?: Record<string, number>;
+  categorical?: Record<string, string[]>;
+}
+
+export interface LabsClusterAttribution {
+  feature: string;
+  value?: string;
+  effect: number;
+}
+
+export interface LabsWorkflowCluster {
+  id: string;
+  medoid: LabsClusterPoint;
+  members: string[];
+  radius: number;
+  stability: number;
+  stable: boolean;
+  distinguishing?: LabsClusterAttribution[];
+}
+
+export interface LabsClusterModel {
+  version: string;
+  id: string;
+  featureVersion: string;
+  options: { minClusterSize: number; resamples: number; stabilityThreshold: number };
+  population: number;
+  clusters: LabsWorkflowCluster[];
+  noise: string[];
+}
+
+export interface LabsConfoundReport {
+  evidence: "observational" | "gym-controlled";
+  statistic: string;
+  association: number;
+  pValue: number;
+  confounded: boolean;
+  tested: number;
+  unlabeled: number;
+  strata: { key: string; size: number }[];
+  undersized: string[];
+  options: { minStratumSize: number; threshold: number; alpha: number; permutations: number };
+}
+
+/** Labs workflow-cluster read (#8309); mirrors internal/workflowcluster.View. */
+export interface LabsWorkflowClusterView {
+  status: "clustered" | "insufficient-data";
+  population: number;
+  minClusterSize: number;
+  model?: LabsClusterModel;
+  confounds?: LabsConfoundReport;
+  confoundsByAxis?: Partial<Record<"gaggle" | "cohort" | "template" | "model" | "harness" | "skills" | "tools", LabsConfoundReport>>;
+  cohorts?: string[];
+  /** 2-D layout of every workflow (classical MDS of the model distances). */
+  map?: LabsClusterMapPoint[];
+  trends?: LabsWorkflowTrendReport;
+  /** Why a clustered view carries no trends (the trend scan failed). */
+  trendsUnavailable?: string;
+  fitness?: LabsClusterFitnessReport;
+  /** Why a clustered view carries no fitness (the retained-run scan failed). */
+  fitnessUnavailable?: string;
+  templates?: LabsTemplateReport;
+  proposals?: LabsChildProposalView;
+  proposalsUnavailable?: string;
+}
+
+export interface LabsChildProposalView {
+  candidates: number;
+  overLimit: number;
+  excluded: number;
+  gaggles: LabsChildProposalGaggle[];
+}
+
+export interface LabsChildProposalGaggle {
+  gaggle: string;
+  status: "clustered" | "insufficient-data";
+  population: number;
+  minClusterSize: number;
+  model?: LabsClusterModel;
+  map: LabsClusterMapPoint[];
+  proposals: LabsChildProposalInsight[];
+}
+
+export interface LabsChildProposalInsight {
+  id: string;
+  gaggle: string;
+  sourceDigest: string;
+  parentRunId: string;
+  stageOccurrence: string;
+  effectiveVersion: string;
+  outcome: string;
+  clusterId?: string;
+  /** Medoid of a stable cluster; a structural observation, not template candidacy. */
+  stableClusterMedoid: boolean;
+  novelty?: ChildNovelty;
+}
+
+export interface LabsTemplateProvenance {
+  templateId: string;
+  fingerprint?: string;
+  distance: number;
+  explicit: boolean;
+  derived: boolean;
+  declaredTemplateId?: string;
+}
+
+export interface LabsTemplateReport {
+  distanceThreshold: number;
+  catalog: Array<{ id: string; fingerprint: string }>;
+  workflows: Record<string, LabsTemplateProvenance>;
+  beyondTemplates: Array<{
+    clusterId: string;
+    medoidId: string;
+    nearestTemplate: string;
+    distance: number;
+  }>;
+}
+
+export interface LabsClusterFitnessReport {
+  scan: {
+    candidates: number;
+    overLimit: number;
+    oversized: number;
+    beforeSince: number;
+    nonTerminal: number;
+    undefinedProvenance: number;
+    unreadable: number;
+  };
+  clusters: LabsClusterFitness[];
+}
+
+export interface LabsClusterFitness {
+  clusterId: string;
+  runCount: number;
+  minimumRuns: number;
+  insufficientRuns: boolean;
+  successRate: number;
+  successInterval: { lower: number; upper: number };
+  medianWallTimeSeconds: number;
+  p90WallTimeSeconds: number;
+  medianCostUsd: number;
+  p90CostUsd: number;
+  humanGateRate: number;
+  escalationRate: number;
+  retryLoopRate: number;
+}
+
+export interface LabsWorkflowTrendReport {
+  modelId: string;
+  featureVersion: string;
+  samples: number;
+  excluded: number;
+  /** Run journals found; overLimit of them were not read because of the scan cap. */
+  candidates: number;
+  overLimit: number;
+  axes: Array<{
+    axis: "model" | "harness" | "authoring-skill";
+    /** Samples with no single recorded version on this axis (in no cohort). */
+    missingProvenance: number;
+    cohorts: Array<{
+      version: string;
+      firstObserved: string;
+      samples: number;
+      occupancy: Array<{ cluster: string; samples: number; share: number; meanFitness: number }>;
+      entropy: number;
+      meanPairwiseDistance: number;
+      meanFitness: number;
+      drift?: {
+        from: string;
+        occupancyDistance: number;
+        entropyDelta: number;
+        pairwiseDistanceDelta: number;
+        fitnessDelta: number;
+        signal: "stable" | "converging" | "diverging" | "mode-collapse" | "mixed";
+      };
+    }>;
+  }>;
+}
+
+export interface LabsClusterMapPoint {
+  id: string;
+  x: number;
+  y: number;
+  /** Empty or absent for noise. */
+  cluster?: string;
+  cohort?: string;
+  templateProvenance?: LabsTemplateProvenance;
+}
+
+export interface LabsFleetInstance {
+  instanceId: string;
+  goobersVersion?: string;
+  workflows: number;
+  shapes: number;
+  aligned: number;
+  private: number;
+  outliers: number;
+}
+
+export interface LabsFleetExclusion {
+  instanceId: string;
+  reason: string;
+}
+
+export interface LabsFleetShape {
+  shape: string;
+  cluster?: string;
+  workflows: number;
+  instances: string[];
+}
+
+export interface LabsFleetCluster {
+  id: string;
+  medoidShape: string;
+  shapes: number;
+  workflows: number;
+  instances: number;
+  stability: number;
+  stable: boolean;
+  distinguishing?: LabsClusterAttribution[];
+}
+
+/** Labs fleet convergence read (#8376); mirrors internal/workflowcluster.FleetView. */
+export interface LabsFleetConvergenceView {
+  status: "clustered" | "insufficient-data";
+  featureVersion?: string;
+  workflows: number;
+  population: number;
+  minClusterSize: number;
+  instances: LabsFleetInstance[];
+  excluded: LabsFleetExclusion[];
+  shapes: LabsFleetShape[];
+  clusters: LabsFleetCluster[];
+  map?: LabsClusterMapPoint[];
+}
+
+/** Labs Fluid UI promotion candidates (#8419); mirrors internal/fluidui.Report. */
+export interface LabsFluidUIReport {
+  advisory: string;
+  generatedAt: string;
+  sustainedAfterDays: number;
+  users: number;
+  candidates: LabsFluidUICandidate[];
+  unmetNeeds: LabsFluidUIUnmetNeed[];
+}
+
+export interface LabsFluidUICandidate {
+  rank: number;
+  shape: string[];
+  users: number;
+  activeUsers: number;
+  sustainedUsers: number;
+  revertedUsers: number;
+  reversionRate: number;
+}
+
+export interface LabsFluidUIUnmetNeed {
+  label: string;
+  users: number;
+}
+
+/** A per-user Portal presentation document (`portal.customization/v1`, docs/labs-fluid-ui.md). */
+export interface FluidUICustomization {
+  version: string;
+  density?: "comfortable" | "compact";
+  pages?: Record<string, FluidUIPageLayout>;
+  runList?: {
+    sort?: "newest" | "oldest" | "failing-first";
+    phases?: string[];
+  };
+  savedViews?: FluidUISavedView[];
+}
+
+export interface FluidUIPageLayout {
+  hidden?: string[];
+  order?: string[];
+}
+
+export interface FluidUISavedView {
+  name: string;
+  route: string;
+}
+
+/** The caller's stored customization; `customization: null` means the standard Portal. */
+export interface FluidUICustomizationState {
+  customization: FluidUICustomization | null;
+  revision: number;
+  updatedAt?: string;
+  incompatible?: boolean;
+  undoDepth: number;
+}
+
+/** Where a natural-language Fluid UI request stands (#8417); always derived from its run. */
+export type FluidUIRequestStatus =
+  | "queued"
+  | "implementing"
+  | "ready_to_preview"
+  | "applied"
+  | "failed"
+  | "unsupported"
+  | "reverted";
+
+/** One of the caller's own Fluid UI requests. Other users' requests are never visible. */
+export interface FluidUIRequest {
+  id: string;
+  prompt: string;
+  status: FluidUIRequestStatus;
+  attempt: number;
+  runId?: string;
+  candidate?: FluidUICustomization;
+  unmetNeed?: string;
+  errors?: string[];
+  detail?: string;
+  appliedRevision?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FluidUIRequestApplication {
+  request: FluidUIRequest;
+  customization: FluidUICustomizationState;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -2187,8 +2624,26 @@ export interface DaemonClient {
   getGaggleConnections(gaggle: string, options?: RequestOptions): Promise<GaggleConnections>;
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
+  getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView>;
+  getLabsFleetConvergence?(options?: RequestOptions): Promise<LabsFleetConvergenceView>;
+  getLabsFluidUIReport?(options?: RequestOptions): Promise<LabsFluidUIReport>;
+  // Labs Fluid UI (#8415, #8416). Optional so hosts without the per-user
+  // store simply keep the standard Portal.
+  getLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;
+  putLabsFluidUICustomization?(
+    customization: FluidUICustomization,
+    options?: RequestOptions,
+  ): Promise<FluidUICustomizationState>;
+  resetLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;
+  undoLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;
+  // Labs Fluid UI requests (#8417): the caller's own natural-language requests.
+  listLabsFluidUIRequests?(options?: RequestOptions): Promise<FluidUIRequest[]>;
+  submitLabsFluidUIRequest?(prompt: string, options?: RequestOptions): Promise<FluidUIRequest>;
+  retryLabsFluidUIRequest?(id: string, options?: RequestOptions): Promise<FluidUIRequest>;
+  applyLabsFluidUIRequest?(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication>;
+  revertLabsFluidUIRequest?(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
-  getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;
@@ -2300,6 +2755,18 @@ export interface ChildWorkflowValidationResponse {
   policyDigest?: string;
   workflowDigest?: string;
   diagnostics: readonly ChildWorkflowDiagnostic[];
+  novelty?: ChildWorkflowNovelty;
+}
+
+export interface ChildWorkflowNovelty extends Omit<ChildNovelty, "humanApproval"> {
+  summary: string;
+}
+
+export interface ChildWorkflowAdmission {
+  state: "pending" | "approved" | "rejected";
+  reason: string;
+  requestedAt: string;
+  decidedAt?: string;
 }
 
 /** Acceptance reports custody, not that execution has begun. */
@@ -2323,4 +2790,6 @@ export interface ChildWorkflowResponse {
   disposition?: ChildWorkflowResolutionResponse;
   acceptedAt: string;
   updatedAt: string;
+  novelty?: ChildWorkflowNovelty;
+  admission?: ChildWorkflowAdmission;
 }

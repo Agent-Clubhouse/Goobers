@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -104,7 +105,7 @@ func (c *WorkspaceCoordinator) Capture(ctx context.Context, child triggerqueue.C
 // isolated managed fork. A missing snapshot is an explicit no-start deferral;
 // changed/missing retained data is custody loss. An existing run journal must
 // use Runner.Resume, whose adoption verifier never recreates its workspace.
-func (c *WorkspaceCoordinator) Prepare(ctx context.Context, child triggerqueue.ChildRecord, repoURL string) (admitted *runner.ChildWorkspaceAdmission, prepareErr error) {
+func (c *WorkspaceCoordinator) Prepare(ctx context.Context, child triggerqueue.ChildRecord, repoURL string) (admitted *workspaceauthority.ChildWorkspaceAdmission, prepareErr error) {
 	if c == nil || c.Queue == nil || c.Worktrees == nil || repoURL == "" {
 		return nil, ErrAuthorityUnavailable
 	}
@@ -148,7 +149,7 @@ func (c *WorkspaceCoordinator) Prepare(ctx context.Context, child triggerqueue.C
 	if !found {
 		return nil, fmt.Errorf("child workspace base mirror is unavailable")
 	}
-	admission := &runner.ChildWorkspaceAdmission{WorkspaceID: child.RunID + "-child", ForkSHA: receipt.Snapshot.Record.SnapshotSHA, RepositoryDigest: receipt.RepositoryDigest}
+	admission := &workspaceauthority.ChildWorkspaceAdmission{WorkspaceID: child.RunID + "-child", ForkSHA: receipt.Snapshot.Record.SnapshotSHA, RepositoryDigest: receipt.RepositoryDigest}
 	_, err = c.Worktrees.CreateChildFromSnapshot(ctx, worktree.ChildOptions{RepoURL: repoURL, RunID: admission.WorkspaceID, OwnerRunID: child.RunID, Gaggle: child.Identity.Gaggle, SnapshotSHA: admission.ForkSHA})
 	if err != nil {
 		return nil, err

@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/cloud-readiness.schema.json",
+  "title": "CloudReadiness",
+  "description": "Whole-instance engine-only cloud cutover readiness report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "target", "cloudReady", "summary", "workflows", "blockers"],
+  "properties": {
+    "schemaVersion": {
+      "description": "Version of this report contract.",
+      "const": "goobers.dev/cloud-readiness/v1"
+    },
+    "target": {
+      "description": "Execution target assessed by this report.",
+      "const": "cloud"
+    },
+    "cloudReady": {
+      "description": "Whether every configured workflow can execute in cloud.",
+      "type": "boolean"
+    },
+    "summary": { "$ref": "#/$defs/summary", "description": "Aggregate blocker counts." },
+    "workflows": {
+      "description": "Blocked workflows in stable gaggle and workflow order.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/workflow" }
+    },
+    "blockers": {
+      "description": "Blockers grouped by feature or configuration remedy.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/blockerGroup" }
+    }
+  },
+  "$defs": {
+    "action": {
+      "description": "Operator action that removes a blocker.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "description"],
+      "properties": {
+        "kind": {
+          "description": "Whether the unblock is an operator config edit or a P4 implementation item.",
+          "type": "string",
+          "enum": ["config", "p4"]
+        },
+        "description": { "description": "Human-readable unblocking action.", "type": "string", "minLength": 1 },
+        "command": { "description": "CLI command that performs or starts the config fix.", "type": "string", "minLength": 1 },
+        "issue": { "description": "P4 issue number that implements engine parity.", "type": "integer", "minimum": 1 },
+        "issueUrl": { "description": "Absolute URL of the P4 implementation issue.", "type": "string", "format": "uri" }
+      }
+    },
+    "blocker": {
+      "description": "One workflow-specific cloud eligibility blocker.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "path", "message", "action"],
+      "properties": {
+        "code": {
+          "description": "Stable runtime finding code.",
+          "type": "string",
+          "enum": ["RUNTIME001", "RUNTIME002", "RUNTIME003"]
+        },
+        "feature": { "description": "Engine-unsupported DSL feature.", "type": "string", "minLength": 1 },
+        "stage": { "description": "Task, gate, parallel, or map that declares the blocker.", "type": "string", "minLength": 1 },
+        "path": { "description": "JSON pointer to the blocking DSL declaration.", "type": "string", "pattern": "^/" },
+        "message": { "description": "Explanation of why cloud execution is blocked.", "type": "string", "minLength": 1 },
+        "action": { "$ref": "#/$defs/action", "description": "Action that removes this blocker." }
+      }
+    },
+    "workflow": {
+      "description": "One configured workflow with cloud blockers.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gaggle", "name", "dslVersion", "blockers"],
+      "properties": {
+        "gaggle": { "description": "Owning gaggle name.", "type": "string", "minLength": 1 },
+        "name": { "description": "Workflow name.", "type": "string", "minLength": 1 },
+        "dslVersion": { "description": "Workflow DSL version.", "type": "string", "minLength": 1 },
+        "blockers": {
+          "description": "Every cloud blocker for this workflow.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/blocker" }
+        }
+      }
+    },
+    "occurrence": {
+      "description": "Workflow location carrying one grouped blocker.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gaggle", "workflow", "path"],
+      "properties": {
+        "gaggle": { "description": "Owning gaggle name.", "type": "string", "minLength": 1 },
+        "workflow": { "description": "Workflow name.", "type": "string", "minLength": 1 },
+        "stage": { "description": "Stage declaring the blocker.", "type": "string", "minLength": 1 },
+        "path": { "description": "JSON pointer to the blocker.", "type": "string", "pattern": "^/" }
+      }
+    },
+    "blockerGroup": {
+      "description": "Stable grouping of blocker occurrences by remedy.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "code", "action", "occurrences"],
+      "properties": {
+        "key": { "description": "Stable grouping key.", "type": "string", "minLength": 1 },
+        "code": { "description": "Runtime finding code.", "type": "string", "enum": ["RUNTIME001", "RUNTIME002", "RUNTIME003"] },
+        "feature": { "description": "Engine-unsupported DSL feature for a feature group.", "type": "string", "minLength": 1 },
+        "action": { "$ref": "#/$defs/action", "description": "Shared unblocking action." },
+        "occurrences": {
+          "description": "Every workflow location requiring this remedy.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/occurrence" }
+        }
+      }
+    },
+    "summary": {
+      "description": "Aggregate readiness counts.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blockedWorkflows", "totalBlockers", "configFixes", "waitingOnP4", "p4Issues"],
+      "properties": {
+        "blockedWorkflows": { "description": "Number of workflows with at least one blocker.", "type": "integer", "minimum": 0 },
+        "totalBlockers": { "description": "Number of workflow-specific blockers.", "type": "integer", "minimum": 0 },
+        "configFixes": { "description": "Blockers removable through workflow configuration.", "type": "integer", "minimum": 0 },
+        "waitingOnP4": { "description": "Blockers waiting for engine parity implementation.", "type": "integer", "minimum": 0 },
+        "p4Issues": {
+          "description": "Distinct P4 implementation issues in ascending order.",
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

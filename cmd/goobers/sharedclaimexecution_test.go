@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -52,7 +54,7 @@ func TestLocalSharedExecutionUsesPersistedLeaseAndPreservesAssetGuard(t *testing
 			}
 			inner := &awaitingClaimFenceExecutor{}
 			start := localSharedExecutionFence(layout)
-			goober := claimFencedGoober{Goober: inner, start: start}
+			goober := runtimewiring.ClaimFencedGoober{Goober: inner, Start: start}
 			if !goober.HasAssetBundle() {
 				t.Fatal("lease wrapper disabled asset protection")
 			}
@@ -65,7 +67,7 @@ func TestLocalSharedExecutionUsesPersistedLeaseAndPreservesAssetGuard(t *testing
 			case "review":
 				_, err = goober.Review(ctx, env)
 			default:
-				det := claimFencedDeterministic{Deterministic: inner, start: start}
+				det := runtimewiring.ClaimFencedDeterministic{Deterministic: inner, Start: start}
 				_, err = det.Run(ctx, env, apiv1.DeterministicRun{})
 			}
 			if !errors.Is(err, claimsclient.ErrSharedExecutionExpired) {

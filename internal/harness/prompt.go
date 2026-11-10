@@ -86,6 +86,15 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 		b.WriteString("\n")
 	}
 
+	if len(req.PrivatePaths) > 0 {
+		b.WriteString("## Private inputs\n\n")
+		b.WriteString("These files are private to the person this run serves. Read them and act on them, but never quote, restate or summarize their content in your messages or in any file you write.\n\n")
+		for _, name := range privateInputNames(req.PrivatePaths) {
+			fmt.Fprintf(&b, "- %s: available at `%s`\n", name, req.PrivatePaths[name])
+		}
+		b.WriteString("\n")
+	}
+
 	// Unconditional for every agentic invocation, not gated on req.Sandbox
 	// (#2419): a goober invents ad-hoc scratch files mid-task for its own
 	// bookkeeping (extract data, then loop over it) far more often than it
@@ -193,12 +202,21 @@ func renderResponseCompletionRepairPrompt(req RunRequest, validationErr error) s
 func completionContract(req RunRequest) (string, string) {
 	if req.Mode == ModeReview {
 		if req.Envelope.ReviewerDeferralAllowed {
-			return "verdict", strings.Replace(verdictShapeHint, `"pass"|"fail"|"needs-changes"`, `"pass"|"fail"|"needs-changes"|"defer"`, 1) + reviewerDeferralHint
+			return "verdict", strings.Replace(verdictShapeHint, `"pass"|"fail"|"needs-changes"`, `"pass"|"fail"|"needs-changes"|"defer"`, 1) + reviewerDeferralHint + standingFindingsHint
 		}
-		return "verdict", verdictShapeHint
+		return "verdict", verdictShapeHint + standingFindingsHint
 	}
 	return "result", resultShapeHint
 }
+
+// standingFindingsHint tells a pull-request reviewer how to answer
+// standingFindings (#5890): the findings an earlier review raised on the same
+// head and base that no later review resolved or rejected, which merge-review's
+// gather-sibling-context lists in the context it hands the reviewer. Worded
+// conditionally, so a review without them is unaffected.
+const standingFindingsHint = `
+
+If your context lists standingFindings (findings an earlier review raised on this same pull request head that no later review answered, even if the base branch has moved since), answer every one: raise it again in findings with the same id and its own class, or add an entry to a top-level "dispositions" array, either {"findingId": "<its id>", "findingGeneration": <its ledgerGeneration>, "outcome": "resolved", "evidence": "<where this diff addresses it>"} or {"findingId": "<its id>", "findingGeneration": <its ledgerGeneration>, "outcome": "rejected", "reason": "<why it does not hold>"}. Copy its ledgerGeneration exactly into findingGeneration (omit only for a legacy finding with no generation). Reusing a standing id on a different finding does not answer it. A standing finding you leave unanswered keeps blocking the merge, and a pass that leaves one unanswered is published as needs-changes.`
 
 const reviewerDeferralHint = `
 

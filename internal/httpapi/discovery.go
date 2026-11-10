@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -45,6 +46,10 @@ func registerDiscoveryRoutes(router *Router, config handlerConfig) (*discoverySt
 		authentication = "none"
 	case DenyAllAuthenticator, *DenyAllAuthenticator:
 		authentication = "disabled"
+	default:
+		if local, ok := config.authenticator.(interface{ AllowsAnonymous() bool }); ok && local.AllowsAnonymous() {
+			authentication = "none"
+		}
 	}
 
 	identity := config.discoveryIdentity
@@ -239,6 +244,8 @@ func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 			Reason:       reason,
 			Streaming:    route.Cost == apicontract.CostStream,
 			RecoverySafe: route.RecoverySafe,
+
+			ExactWorkItem: route.ID == apicontract.RouteTriggerIngest && exactWorkItemAvailable(s.config.triggers),
 		})
 	}
 	return apicontract.CapabilityDocument{
@@ -250,6 +257,11 @@ func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 	}
 }
 
+func exactWorkItemAvailable(service TriggerService) bool {
+	exact, ok := service.(ExactWorkItemTriggerService)
+	return ok && exact.SupportsExactWorkItems()
+}
+
 func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, string, string) {
 	var available bool
 	switch id {
@@ -257,13 +269,21 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.instanceReadiness != nil
 	case apicontract.RouteConfigDigest:
 		available = config.configDigest != nil
+	case apicontract.RouteEngineChildAdmit, apicontract.RouteEngineChildLoad, apicontract.RouteEngineChildCancel:
+		available = config.engineChildren != nil
+	case apicontract.RouteEngineChildOrigin, apicontract.RouteEngineChildHandoff, apicontract.RouteEngineChildAuthority, apicontract.RouteEngineChildAuthorityRelease:
+		available = config.engineChildAuthority != nil
+	case apicontract.RouteEngineChildPark, apicontract.RouteEngineChildFinalize, apicontract.RouteEngineChildComplete:
+		available = config.engineChildProtocol != nil
+	case apicontract.RouteConfigSnapshot:
+		available = config.configSnapshots != nil
 	case apicontract.RouteWorkerConfigDivergence:
 		available = config.workerConfigDivergence != nil
 	case apicontract.RouteEvents:
 		available = config.events != nil
 	case apicontract.RouteRunReveal:
 		available = config.runRevealer != nil
-	case apicontract.RouteApproveStage, apicontract.RouteOverrideStage, apicontract.RouteRerunStage:
+	case apicontract.RouteApproveStage, apicontract.RouteOverrideStage, apicontract.RouteRerunStage, apicontract.RouteRetryStage:
 		available = config.interventions != nil
 	case apicontract.RouteWorkflowEnabled:
 		available = config.workflowMutations != nil
@@ -281,6 +301,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.escalations != nil
 	case apicontract.RouteCancelRun:
 		available = config.cancels != nil
+	case apicontract.RouteJournalTerminalIntervention:
+		_, available = config.journal.(TerminalInterventionService)
 	case apicontract.RouteJournalEmit:
 		available = config.journal != nil
 	case apicontract.RouteJournalRunPhase, apicontract.RouteJournalConflictTouches,
@@ -309,6 +331,20 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.state != nil
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
+	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport,
+		apicontract.RouteLabsFluidUIRequestsList, apicontract.RouteLabsFluidUIRequestGet,
+		apicontract.RouteLabsFluidUIRequestApply, apicontract.RouteLabsFluidUIRequestRevert,
+		apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
+		available = labsFluidUIRouteAvailable(id, config)
+	case apicontract.RouteLabsWorkflowFeatures:
+		if config.labsWorkflowFeatures == nil {
+			return false, "labs_unavailable", "Labs workflow features are not configured on this daemon"
+		}
+		if err := config.labsWorkflowFeatures.WorkflowFeaturesAvailability(context.Background()); err != nil {
+			return labsWorkflowFeaturesUnavailable(err)
+		}
+		return true, "", ""
 	case apicontract.RouteClaimsActive:
 		available = config.activeClaimsAvailable
 	case apicontract.RouteTelemetryCosts, apicontract.RouteTelemetryStats,
@@ -338,6 +374,19 @@ func routeExtensionAvailable(id apicontract.RouteID, config handlerConfig) bool 
 	return available
 }
 
+func labsFluidUIRouteAvailable(id apicontract.RouteID, config handlerConfig) bool {
+	switch id {
+	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport:
+		return config.labsFluidUI != nil
+	case apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
+		// Submitting and retrying start a workflow run through trigger ingest.
+		return config.labsFluidUIRequests != nil && config.triggers != nil
+	default:
+		return config.labsFluidUIRequests != nil
+	}
+}
+
 func telemetryRouteAvailable(id apicontract.RouteID, config handlerConfig) bool {
 	if id == apicontract.RouteWorkItems || id == apicontract.RouteWorkItemDetail {
 		return config.telemetryReadsAvailable && config.workItemsAvailable
@@ -346,7 +395,7 @@ func telemetryRouteAvailable(id apicontract.RouteID, config handlerConfig) bool 
 }
 
 func requiredRole(route apicontract.Route) string {
-	if route.Method == http.MethodGet && route.ID != apicontract.RouteRunRecovery {
+	if route.Method == http.MethodGet && route.ID != apicontract.RouteRunRecovery || labsFluidUIPath(route.Path) {
 		return string(RoleView)
 	}
 	return string(RoleOperate)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -684,6 +685,7 @@ func TestPodNamePerAttempt(t *testing.T) {
 	if PodName(first) == PodName(second) {
 		t.Fatalf("attempts 1 and 2 share pod name %q — a new attempt must be a new pod", PodName(first))
 	}
+
 	if PodName(first) != PodName(testAttempt()) {
 		t.Fatal("the same attempt must derive the same pod name (idempotent create)")
 	}
@@ -693,6 +695,29 @@ func TestPodNamePerAttempt(t *testing.T) {
 	name := PodName(long)
 	if len(name) > 63 {
 		t.Fatalf("pod name %q exceeds the 63-character DNS label bound", name)
+	}
+}
+
+func TestPodNameSeparatesFanOutOccurrences(t *testing.T) {
+	first := testAttempt()
+	first.PodAttempt, first.FanOutVisit, first.FanOutBranch = 7, 41, 1
+	second := first
+	second.FanOutBranch = 2
+	if PodName(first) == PodName(second) {
+		t.Fatalf("fan-out branches share pod name %q", PodName(first))
+	}
+	for _, attempt := range []Attempt{first, second} {
+		if name := PodName(attempt); len(name) > 63 {
+			t.Fatalf("fan-out pod name has %d bytes: %q", len(name), name)
+		}
+		pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pod.Labels[LabelFanOutVisit] != "41" ||
+			pod.Labels[LabelFanOutBranch] != strconv.Itoa(attempt.FanOutBranch) {
+			t.Fatalf("fan-out labels = %v", pod.Labels)
+		}
 	}
 }
 

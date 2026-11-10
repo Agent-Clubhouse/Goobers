@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -83,18 +82,7 @@ func (s *Local) readQueueEligibilityReport(ctx context.Context, gaggle, workflow
 	if !apiv1.ValidRunID(row.RunID) || row.Evidence.Artifact == nil {
 		return nil, fmt.Errorf("invalid queue evidence pointer")
 	}
-	dir, err := s.sources.Layout.FindRunDir(row.RunID)
-	if err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("invalid run directory")
-	}
-	reader, err := journal.OpenReadOnly(dir)
+	reader, err := s.journalReader().OpenRun(ctx, journal.RunRef{ID: row.RunID, ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

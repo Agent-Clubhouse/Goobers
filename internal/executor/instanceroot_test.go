@@ -47,6 +47,7 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// Each of these names the specific file in shell.go's map comment.
 		{name: "issue-close-out (journal read plane)", cmd: []string{"goobers", "issue-close-out"}, want: false},
 		{name: "reconcile-branches (instance log + RunsDir walk)", cmd: []string{"goobers", "reconcile-branches"}, want: true},
+		{name: "fluid-ui-request (private Labs Fluid UI records)", cmd: []string{"goobers", "fluid-ui-request", "--load"}, want: true},
 
 		// --- NO LONGER REFUSED: every stateful access is plane-served
 		// (Goobers#3897 stamps the endpoints and bearers; #3898 moved the

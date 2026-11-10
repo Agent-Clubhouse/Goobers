@@ -5,27 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"time"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
-	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/terminalhooks/prepare"
 	"github.com/goobers/goobers/providers"
 )
 
+// The terminal branch policy is internal/terminalhooks/prepare, shared with the
+// cloud controller; the names below are this package's own view of it.
 const (
-	branchCleanupOperation = "delete"
-	branchCleanupSucceeded = "succeeded"
-	branchCleanupSkipped   = "unnecessary"
-	branchCleanupFailed    = "failed"
+	branchCleanupOperation = prepare.OperationDelete
+	branchCleanupSucceeded = prepare.CleanupSucceeded
+	branchCleanupSkipped   = prepare.CleanupSkipped
+	branchCleanupFailed    = prepare.CleanupFailed
 )
 
-type deleteBranchFunc func(context.Context, providers.DeleteBranchRequest) (providers.DeleteBranchResult, error)
+type deleteBranchFunc = prepare.DeleteFunc
 
 type terminalSecretRegistry interface {
 	credentials.SecretRegistrar
@@ -112,9 +115,7 @@ func terminalBranchDeleteSupported(kind providers.ProviderKind) error {
 // recorded; for an engine run it is recorded in the INSTANCE log, which is the
 // daemon's own record of what the daemon did, and is exactly where a
 // daemon-side side effect on a run it does not own belongs.
-type terminalAnnotator interface {
-	Append(journal.Event) error
-}
+type terminalAnnotator = prepare.Annotator
 
 // terminalBranchPreparer is buildTerminalBranchPreparer's driver-neutral
 // shape: runner.TerminalPreparer with the concrete *journal.Run widened to
@@ -151,7 +152,7 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, projec
 	}
 	return func(runID string, phase journal.RunPhase, annotate terminalAnnotator) error {
 		branchErr := finalizeTerminalBranch(l.RunsDir(), runID, annotate, repo, deleteBranch)
-		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, annotate, repo, labelAbortedPR)
+		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, annotate, repo, labelAbortedPR, newTerminalReportQueue(l))
 		return errors.Join(branchErr, labelErr)
 	}, nil
 }
@@ -172,7 +173,7 @@ func terminalGaggleProject(l instance.Layout) (apiv1.RepoRef, error) {
 		// This helper runs outside any CLI surface (one-shot abort, stalled-run
 		// sweep), so the report's errors travel inside the returned error
 		// rather than to a stderr this scope does not own.
-		if summary := validationIssueSummary(report); summary != "" {
+		if summary := runtimewiring.ValidationIssueSummary(report); summary != "" {
 			return apiv1.RepoRef{}, fmt.Errorf("resolve gaggle %q project for terminal branch cleanup: %w (%s)", l.Gaggle(), err, summary)
 		}
 		return apiv1.RepoRef{}, fmt.Errorf("resolve gaggle %q project for terminal branch cleanup: %w", l.Gaggle(), err)
@@ -220,7 +221,7 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		gaggleOwner += "/" + project.Project
 	}
-	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}
@@ -231,7 +232,7 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 	repo := terminalRepositoryRefForProject(cfg, project)
 	// A credentials: entry for github:branch:delete is a PAT, sent as Basic
 	// even on an Entra-authenticated repository (#5957).
-	adoScheme := adoCredentialSchemes(cfg, project, grants)[string(capability.GitHubBranchDelete)]
+	adoScheme := runtimewiring.AdoCredentialSchemes(cfg, project, grants)[string(capability.GitHubBranchDelete)]
 	deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
 		if err := terminalBranchDeleteSupported(repo.Provider); err != nil {
 			return providers.DeleteBranchResult{}, err
@@ -260,6 +261,14 @@ func scrubTerminalError(scrubber journal.Scrubber, err error) error {
 	if err == nil {
 		return nil
 	}
+	if limit, ok := providers.AsRateLimitError(err); ok {
+		safe := *limit
+		safe.Endpoint = string(scrubber.Scrub([]byte(safe.Endpoint)))
+		safe.RetryAfterRaw = string(scrubber.Scrub([]byte(safe.RetryAfterRaw)))
+		safe.RemainingRaw = string(scrubber.Scrub([]byte(safe.RemainingRaw)))
+		safe.ResetRaw = string(scrubber.Scrub([]byte(safe.ResetRaw)))
+		return &safe
+	}
 	return errors.New(string(scrubber.Scrub([]byte(err.Error()))))
 }
 
@@ -272,119 +281,5 @@ func finalizeTerminalBranch(runsDir, runID string, annotate terminalAnnotator, r
 	if err != nil {
 		return fmt.Errorf("read terminal run events: %w", err)
 	}
-
-	segmentStart := 0
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed {
-			segmentStart = i + 1
-			break
-		}
-	}
-
-	var branch *journal.ExternalRef
-	var pushed, openedPR, alreadyFinalized, noWork bool
-	var lastGateOutcome string
-	for i := range events {
-		ev := events[i]
-		if ev.ExternalRef != nil && ev.ExternalRef.Kind == "branch" {
-			if branch == nil || (branch.ID == "" && ev.ExternalRef.ID != "") {
-				ref := *ev.ExternalRef
-				branch = &ref
-			}
-		}
-		if i < segmentStart {
-			continue
-		}
-		if ev.ExternalRef != nil && ev.ExternalRef.Kind == "branch" {
-			if ev.Runner["operation"] == branchCleanupOperation {
-				alreadyFinalized = true
-			}
-		}
-		if ev.Type == journal.EventStageFinished && ev.Stage == "push-branch" && ev.Status == string(apiv1.ResultSuccess) {
-			pushed = true
-		}
-		if ev.Type == journal.EventStageFinished && ev.Stage == "open-pr" && ev.Status == string(apiv1.ResultSuccess) {
-			openedPR = true
-		}
-		if ev.Type == journal.EventStageFinished && ev.Status == string(apiv1.ResultNoWork) {
-			noWork = true
-		}
-		if ev.Type == journal.EventGateEvaluated {
-			lastGateOutcome = ev.Verdict
-		}
-		if ev.Type == journal.EventRefTouched && ev.ExternalRef != nil && ev.ExternalRef.Kind == "pr" {
-			openedPR = true
-		}
-	}
-	if alreadyFinalized {
-		return nil
-	}
-	// The runner deliberately leaves an empty tick branchless; there is no
-	// missing provider ref to diagnose or clean up in that case.
-	if branch == nil && noWork {
-		return nil
-	}
-	if branch == nil {
-		return appendBranchCleanup(annotate, &journal.ExternalRef{
-			Provider: string(repo.Provider),
-			Kind:     "branch",
-		}, branchCleanupSkipped, "branch-reference-missing", nil)
-	}
-	if !pushed {
-		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "branch-not-pushed", nil)
-	}
-	if openedPR {
-		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "pull-request-opened", nil)
-	}
-	if lastGateOutcome == gate.OutcomeInfra {
-		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "remediable-validation-failure", nil)
-	}
-	if deleteBranch == nil {
-		return appendBranchCleanup(annotate, branch, branchCleanupFailed, "", errors.New("branch-delete provider is not configured"))
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	result, deleteErr := deleteBranch(ctx, providers.DeleteBranchRequest{Repository: repo, Name: branch.ID})
-	return recordTerminalBranchDelete(annotate, branch, result, deleteErr)
-}
-
-// recordTerminalBranchDelete journals one terminal delete's outcome. A branch
-// an open pull request uses (providers.BranchInUseError) is kept, not failed.
-func recordTerminalBranchDelete(annotate terminalAnnotator, branch *journal.ExternalRef, result providers.DeleteBranchResult, deleteErr error) error {
-	var inUse *providers.BranchInUseError
-	switch {
-	case errors.As(deleteErr, &inUse) && inUse.AsBase:
-		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "stacked-pull-request-open", nil)
-	case errors.As(deleteErr, &inUse):
-		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "pull-request-open", nil)
-	case deleteErr != nil:
-		return appendBranchCleanup(annotate, branch, branchCleanupFailed, "", deleteErr)
-	case !result.Deleted:
-		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "branch-not-found", nil)
-	default:
-		return appendBranchCleanup(annotate, branch, branchCleanupSucceeded, "", nil)
-	}
-}
-
-func appendBranchCleanup(annotate terminalAnnotator, branch *journal.ExternalRef, outcome, reason string, cleanupErr error) error {
-	runnerFields := map[string]any{
-		"operation": branchCleanupOperation,
-		"outcome":   outcome,
-	}
-	if reason != "" {
-		runnerFields["reason"] = reason
-	}
-	ev := journal.Event{
-		Type:        journal.EventRefTouched,
-		ExternalRef: branch,
-		Runner:      runnerFields,
-	}
-	if cleanupErr != nil {
-		ev.Error = journal.ErrorDetailFor("branch_delete_failed", cleanupErr)
-	}
-	if err := annotate.Append(ev); err != nil {
-		return fmt.Errorf("journal terminal branch cleanup: %w", err)
-	}
-	return nil
+	return prepare.FinalizeBranch(events, annotate, repo, deleteBranch)
 }

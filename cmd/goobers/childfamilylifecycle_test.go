@@ -39,7 +39,7 @@ func TestChildFamilySweepPreservesEscalationAndClosesCompletedParent(t *testing.
 	// The production Drain caller runs family settlement before attempting any
 	// new child dispatch, even without an installed child launcher/scheduler.
 	f.service.children = nil
-	f.service.dispatch.sched.Store(nil)
+	f.service.dispatch.AttachScheduler(nil)
 	dir, err := f.launcher.layout.FindRunDir(f.submission.Envelope.ParentRunID)
 	if err != nil {
 		t.Fatal(err)

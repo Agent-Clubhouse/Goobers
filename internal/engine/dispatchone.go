@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -108,8 +109,11 @@ func DispatchOne(ctx workflow.Context, in DispatchStageInput) (DispatchStageResu
 	// trusted, which is the same posture refuseUnboundAttemptIdentity takes
 	// above, and workflow.GetInfo's execution id is deterministic on replay.
 	in.OwningWorkflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
-	var result DispatchStageResult
-	if err := workflow.ExecuteActivity(ctx, ActDispatchStage, in).Get(ctx, &result); err != nil {
+	result, err := executeDispatchActivity(ctx, in)
+	if err != nil {
+		if errors.Is(err, errHandoffWorkerLost) {
+			err = dispatchHandoffWorkerLossApplication(err)
+		}
 		// Returned bare: the caller classifies it with
 		// ClassifyDispatchFailure, and wrapping would hide the
 		// *temporal.ApplicationError type that classification reads.

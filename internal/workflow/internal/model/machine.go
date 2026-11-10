@@ -81,6 +81,59 @@ type Machine struct {
 	digest           string
 	artifactBindings map[string]map[string]ArtifactBinding
 	slotEnvelopes    map[string]map[string]string
+	goobers          map[string]apiv1.GooberSpec
+	labels           map[string]string
+}
+
+// SetLabels stores the Workflow object's metadata.labels. Labels are run
+// metadata outside Def, so they never change the pinned definition digest.
+func (m *Machine) SetLabels(labels map[string]string) {
+	m.labels = nil
+	if len(labels) == 0 {
+		return
+	}
+	m.labels = make(map[string]string, len(labels))
+	for key, value := range labels {
+		m.labels[key] = value
+	}
+}
+
+// Labels returns a copy of the Workflow object's metadata.labels.
+func (m *Machine) Labels() map[string]string {
+	if len(m.labels) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m.labels))
+	for key, value := range m.labels {
+		out[key] = value
+	}
+	return out
+}
+
+// SetGoobers stores the compiler-materialized goober declarations for this
+// pinned definition.
+func (m *Machine) SetGoobers(goobers map[string]apiv1.GooberSpec) {
+	m.goobers = cloneGoobers(goobers)
+}
+
+// Goober returns one compiler-materialized goober declaration.
+func (m *Machine) Goober(name string) (apiv1.GooberSpec, bool) {
+	spec, ok := m.goobers[name]
+	if !ok {
+		return apiv1.GooberSpec{}, false
+	}
+	return *spec.DeepCopy(), true
+}
+
+func cloneGoobers(source map[string]apiv1.GooberSpec) map[string]apiv1.GooberSpec {
+	if source == nil {
+		return nil
+	}
+	out := make(map[string]apiv1.GooberSpec, len(source))
+	for name, spec := range source {
+		out[name] = *spec.DeepCopy()
+	}
+	return out
 }
 
 // ArtifactBinding is the compiler-lowered DSL 3.1 semantic artifact edge for

@@ -16,8 +16,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -56,19 +60,9 @@ func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProv
 // `goobers up`'s periodic RecoverExpired sweep (the reaper), both of which
 // must agree on the same paths.
 const (
-	claimLedgerFileName = "claims.json"
-	claimLockFileName   = "claims.lock"
-	// mergeLockFileName is the cross-process file lock `merge-pr` (mergepr.go)
-	// takes around its poll->decide->merge window (issue #719): once
-	// merge-review's readiness allows several concurrent runs to review
-	// DIFFERENT PRs at once, each independently reaches merge-pr, but only
-	// one PR may be inside that window at a time — serializing it is what
-	// lets a later run's re-poll (D6) actually observe an earlier run's
-	// just-landed merge instead of racing it. A dedicated lock file, not
-	// claimLockFileName, since this guards a different critical section
-	// (the merge decision, not claim-ledger mutation) with a different
-	// hold-time profile (network round-trips, not a fast local read/write).
-	mergeLockFileName = "merge.lock"
+	claimLedgerFileName = scheduling.ClaimLedgerFileName
+	claimLockFileName   = scheduling.ClaimLockFileName
+	mergeLockFileName   = scheduling.MergeLockFileName
 
 	claimLockOperationBacklogFilterBlocked = "backlog-query.filter-blocked"
 	claimLockOperationBacklogScanCursor    = "backlog-query.scan-cursor"
@@ -90,9 +84,9 @@ const (
 	claimLockOperationRunLookup               = "run-claims.lookup"
 	claimLockOperationBlockedUpdate           = "blocked-records.update"
 	claimLockOperationCircuitBreakerOutbox    = "circuit-breaker-outbox.update"
-	claimLockOperationRecovery                = "claim-recovery"
+	claimLockOperationRecovery                = scheduling.ClaimLockOperationRecovery
 	claimLockOperationRenewal                 = "claim-renewal"
-	claimLockOperationRunRelease              = "run-claims.release"
+	claimLockOperationRunRelease              = scheduling.ClaimLockOperationRunRelease
 	claimLockOperationCloseOutLookup          = "issue-close-out.lookup"
 	claimLockOperationCloseOutRelease         = "issue-close-out.release"
 	claimLockOperationMigration               = "claim-ledger.migrate"
@@ -902,11 +896,25 @@ func withClaimLockThreshold(lockPath, operation string, slowThreshold time.Durat
 }
 
 func withClaimLockForRun(lockPath, operation, gaggle, runID string, fn func() error) error {
+	return withClaimLockForRunContext(context.Background(), lockPath, operation, gaggle, runID, fn)
+}
+
+func withClaimLockForRunContext(ctx context.Context, lockPath, operation, gaggle, runID string, fn func() error) error {
 	timeout, err := claimsLockTimeoutForPath(lockPath)
 	if err != nil {
 		return err
 	}
-	return withClaimLockBounds(lockPath, operation, timeout, claimLockSlowThreshold, claimLockEventContext{
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		margin := min(remaining/10, 250*time.Millisecond)
+		if bounded := remaining - margin; bounded < timeout {
+			timeout = bounded
+		}
+	}
+	if timeout <= 0 {
+		return ctx.Err()
+	}
+	return withClaimLockBoundsContext(ctx, lockPath, operation, timeout, claimLockSlowThreshold, claimLockEventContext{
 		Gaggle: gaggle,
 		RunID:  runID,
 	}, fn)
@@ -925,6 +933,10 @@ func claimsLockTimeoutForPath(lockPath string) (time.Duration, error) {
 }
 
 func withClaimLockBounds(lockPath, operation string, timeout, slowThreshold time.Duration, eventContext claimLockEventContext, fn func() error) error {
+	return withClaimLockBoundsContext(context.Background(), lockPath, operation, timeout, slowThreshold, eventContext, fn)
+}
+
+func withClaimLockBoundsContext(ctx context.Context, lockPath, operation string, timeout, slowThreshold time.Duration, eventContext claimLockEventContext, fn func() error) error {
 	if operation == "" {
 		return errors.New("claim lock operation is required")
 	}
@@ -933,7 +945,7 @@ func withClaimLockBounds(lockPath, operation string, timeout, slowThreshold time
 	}
 
 	waitStarted := time.Now()
-	held, err := acquireClaimLock(lockPath, operation, timeout, waitStarted)
+	held, err := acquireClaimLockContext(ctx, lockPath, operation, timeout, waitStarted)
 	if err != nil {
 		var timeoutErr *claimsLockTimeoutError
 		if !errors.As(err, &timeoutErr) {
@@ -964,6 +976,10 @@ func withClaimLockBounds(lockPath, operation string, timeout, slowThreshold time
 }
 
 func acquireClaimLock(lockPath, operation string, timeout time.Duration, started time.Time) (*lock.Handle, error) {
+	return acquireClaimLockContext(context.Background(), lockPath, operation, timeout, started)
+}
+
+func acquireClaimLockContext(ctx context.Context, lockPath, operation string, timeout time.Duration, started time.Time) (*lock.Handle, error) {
 	retryInterval := claimLockRetryInterval
 	if timeout < retryInterval {
 		retryInterval = timeout / 10
@@ -990,6 +1006,8 @@ func acquireClaimLock(lockPath, operation string, timeout time.Duration, started
 			return nil, newClaimsLockTimeoutError(lockPath, operation, timeout, started)
 		}
 		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case <-timer.C:
 			return nil, newClaimsLockTimeoutError(lockPath, operation, timeout, started)
 		case <-retry.C:
@@ -998,21 +1016,22 @@ func acquireClaimLock(lockPath, operation string, timeout time.Duration, started
 }
 
 func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration time.Duration) error {
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
 	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {
 		return fmt.Errorf("open instance log for slow claim lock: %w", err)
 	}
-	if err := log.Append(journal.Event{
-		Type: journal.EventClaimLockSlow,
-		Runner: map[string]any{
-			"operation":    operation,
-			"pid":          os.Getpid(),
-			"waitDuration": waitDuration.String(),
-			"holdDuration": holdDuration.String(),
-		},
-	}); err != nil {
+	details := map[string]any{
+		"operation":    operation,
+		"pid":          os.Getpid(),
+		"waitDuration": waitDuration.String(),
+		"holdDuration": holdDuration.String(),
+	}
+	if operation == claimsclient.ProviderReleaseReserveOperation || operation == claimsclient.ProviderReleaseFinalizeOperation {
+		details["itemCount"] = 1
+	}
+	if err := log.Append(journal.Event{Type: journal.EventClaimLockSlow, Runner: details}); err != nil {
 		_ = log.Close()
 		return fmt.Errorf("append slow claim lock event: %w", err)
 	}
@@ -1023,7 +1042,7 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 }
 
 func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext, timeoutErr *claimsLockTimeoutError) error {
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
 	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {

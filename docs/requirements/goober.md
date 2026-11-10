@@ -54,6 +54,8 @@ capabilities: [github:issues:write]
 tools: [lookup-issue, read-context]
 mcpServers:
   - name: remote-context
+    # DSL 3.1. Omitted means true.
+    required: true
     url: https://mcp.example.test/api
     credentialRefs:
       - capability: github:issues:write
@@ -101,14 +103,21 @@ credentials must use `credentialRefs`. Each external server receives only the
 explicit names in `spec.tools`; an omitted tool is unavailable, and an empty
 list denies all external MCP tools.
 
-External MCP servers currently require `harness: copilot` (or the default
-Copilot harness). Other harnesses reject non-empty `mcpServers` declarations
-until their adapters implement equivalent invocation-scoped isolation. Because
-Copilot starts local stdio servers from one process environment, a local server
-must explicitly reference every credential used by any server in the same
-goober declaration; otherwise admission fails closed rather than exposing a
-sibling server's credential. A remote server avoids that subprocess-inheritance
-limitation.
+DSL 3.1 adds the per-server boolean `required`. When `required` is omitted, the
+server is required and failure to register, start, or complete its handshake
+fails the stage before the model turn. Set `required: false` only when the stage
+can satisfy its contract without that server. An optional startup failure is
+recorded as a journal warning and the turn continues without that server.
+Harness-owned `goobers-io` is always required and cannot be made optional.
+DSL 2.0 and 3.0 definitions cannot declare this field and retain their
+historical harness-specific behavior when it is omitted. Set the workflow's
+`dslVersion` to `3.1` to opt into uniform requiredness.
+
+Copilot, Claude Code, and Codex all support declared MCP servers. Because local
+stdio servers inherit one process environment, a local server must explicitly
+reference every credential used by any server in the same goober declaration;
+otherwise admission fails closed rather than exposing a sibling server's
+credential. A remote server avoids that subprocess-inheritance limitation.
 
 The scoped Copilot home intentionally excludes ambient OAuth and BYOK
 credentials. A Copilot invocation with external MCP servers therefore requires
@@ -225,9 +234,13 @@ behaves exactly as before each was added.
   **references, never inline values** — the same rule as every other credential
   surface (`SEC-010`/`CFG-009`) — and each reference MUST name the capability it
   draws from, so an MCP server can never receive a credential for a capability
-  the goober did not declare (`SEC-042`). An MCP server is an additional tool
-  surface, not an additional capability: declaring one MUST NOT widen what the
-  goober may do.
+  the goober did not declare (`SEC-042`). In DSL 3.1 its `required` field
+  controls startup failure semantics;
+  omission MUST fail closed, while an explicitly optional failure MUST be
+  journaled as a warning without preventing the model turn. Harness-owned
+  `goobers-io` MUST remain required independently of this declaration. An MCP
+  server remains an additional tool surface, not an additional capability:
+  declaring one MUST NOT widen what the goober may do.
 - **GBO-062 (MUST, Shipped):** A Goober MAY declare **policy actions** alongside
   its capabilities. Capabilities are what the platform will *inject a credential
   for*; policy actions are what the goober is *permitted to do* with what it

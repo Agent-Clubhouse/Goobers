@@ -2,8 +2,6 @@ package fleet
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +10,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 var errRevoked = errors.New("fleet: registration revoked")
@@ -73,6 +73,7 @@ func (c *Connector) Run(ctx context.Context) error {
 		return fmt.Errorf("fleet: connector storage is required")
 	}
 	attempt := 0
+	retryPolicy := retryutil.Policy{Base: time.Second, Max: 30 * time.Second, SymmetricJitter: true}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil
@@ -114,7 +115,12 @@ func (c *Connector) Run(ctx context.Context) error {
 		if connected {
 			attempt = 0
 		}
-		delay := c.backoff(attempt)
+		var delay time.Duration
+		if c.Backoff != nil {
+			delay = c.Backoff(attempt)
+		} else {
+			delay = retryutil.JitteredExponential(retryPolicy, attempt)
+		}
 		attempt++
 		if err := c.wait(ctx, delay); err != nil {
 			// wait returns an error only when the connector context is done.
@@ -195,6 +201,7 @@ func (c *Connector) connectOnce(ctx context.Context, record Record, onConnected 
 		DisplayName:            record.Association.DisplayName,
 		GoobersVersion:         c.GoobersVersion,
 		ACL:                    record.Association.ACL,
+		Projections:            record.Association.Projections,
 	}); err != nil {
 		return err
 	}
@@ -315,17 +322,7 @@ func (c *Connector) connectOnce(ctx context.Context, record Record, onConnected 
 				if err := json.Unmarshal(message.data, &revoke); err != nil {
 					return fmt.Errorf("fleet: decode revoke: %w", err)
 				}
-				if err := c.Storage.Update(c.InstanceRoot, func(association *Association) error {
-					if association.RegistrationID != record.Association.RegistrationID {
-						return errAssociationChanged
-					}
-					association.Revoked = true
-					association.RevokeReason = strings.TrimSpace(revoke.Reason)
-					association.Connected = false
-					association.ConnectionID = ""
-					association.LastError = ""
-					return nil
-				}); err != nil {
+				if err := c.recordRevoked(record.Association.RegistrationID, revoke.Reason); err != nil {
 					return err
 				}
 				return errRevoked
@@ -431,30 +428,27 @@ func (c *Connector) recordDisconnected(registrationID string, connectionErr erro
 	})
 }
 
+func (c *Connector) recordRevoked(registrationID, reason string) error {
+	return c.Storage.Update(c.InstanceRoot, func(association *Association) error {
+		if association.RegistrationID != registrationID {
+			return errAssociationChanged
+		}
+		association.Revoked = true
+		association.RevokeReason = strings.TrimSpace(reason)
+		// Revocation ends every projection scope granted to the registration.
+		association.Projections = nil
+		association.Connected = false
+		association.ConnectionID = ""
+		association.LastError = ""
+		return nil
+	})
+}
+
 func (c *Connector) now() time.Time {
 	if c.Now != nil {
 		return c.Now().UTC()
 	}
 	return time.Now().UTC()
-}
-
-func (c *Connector) backoff(attempt int) time.Duration {
-	if c.Backoff != nil {
-		return c.Backoff(attempt)
-	}
-	if attempt > 5 {
-		attempt = 5
-	}
-	base := time.Second << attempt
-	if base > 30*time.Second {
-		base = 30 * time.Second
-	}
-	var random [8]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return base
-	}
-	fraction := float64(binary.LittleEndian.Uint64(random[:])) / float64(^uint64(0))
-	return time.Duration(float64(base) * (0.75 + 0.5*fraction))
 }
 
 func (c *Connector) wait(ctx context.Context, delay time.Duration) error {

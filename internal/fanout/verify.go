@@ -59,6 +59,9 @@ func NewMapVisit(start journal.Event, def apiv1.Map) (*MapVisit, error) {
 	if len(roster.Items) > MaxRosterItems {
 		return fail(KindExtra, "roster records %d items, bound is %d", len(roster.Items), MaxRosterItems)
 	}
+	if roster.RosterDigest != "" && !ValidDigest(roster.RosterDigest) {
+		return fail(KindConflicting, "roster digest %q is malformed", roster.RosterDigest)
+	}
 	for i, item := range roster.Items {
 		if err := verifyRosterItem(start, roster.Items, i, item); err != nil {
 			return nil, err
@@ -81,9 +84,15 @@ func verifyRosterItem(start journal.Event, items []journal.MapItem, i int, item 
 	if i > 0 && items[i-1].Identity > item.Identity {
 		return fail(KindConflicting, fmt.Sprintf("roster identity %q is out of bytewise order", item.Identity))
 	}
-	digest, err := ItemDigest(item.Identity, item.Item)
-	if err != nil || digest != item.Digest {
-		return fail(KindConflicting, fmt.Sprintf("roster item %q digest %s does not match its recorded {identity, item}", item.Identity, item.Digest))
+	if len(item.Item) == 0 {
+		if start.MapRoster.RosterDigest == "" {
+			return fail(KindMissing, fmt.Sprintf("roster item %q has no item bytes or frozen roster digest", item.Identity))
+		}
+	} else {
+		digest, err := ItemDigest(item.Identity, item.Item)
+		if err != nil || digest != item.Digest {
+			return fail(KindConflicting, fmt.Sprintf("roster item %q digest %s does not match its recorded {identity, item}", item.Identity, item.Digest))
+		}
 	}
 	return nil
 }

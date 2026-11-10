@@ -45,7 +45,7 @@ func recordReviewerDispatch(ctx workflow.Context, rec *runJournal, g apiv1.Gate,
 		event.Runner = map[string]any{"reviewed": review.Reviewed}
 	} else {
 		event.Status = string(apiv1.ResultFailure)
-		event.Error = journal.ErrorDetailFor("evaluator_error", err)
+		event.Error = domainErrorDetailFor("evaluator_error", err)
 		failureClass, _ := ClassifyDispatchFailure(err)
 		event.Runner = map[string]any{"retryFailureClass": string(failureClass)}
 	}

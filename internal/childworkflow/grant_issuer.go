@@ -25,12 +25,24 @@ type StageAuthorityPreparer interface {
 // no separate in-memory authority map. The daemon must use the same signing key
 // in HTTPService and the same registry in its journal scrubbers.
 type GrantIssuer struct {
-	Queue     *triggerqueue.Store
+	Queue     ChildQueue
 	Grants    *podauth.SignedKey
 	Authority StageAuthorityPreparer
 	Endpoint  string
 	Secrets   interface{ RegisterUntil([]byte, time.Time) }
 	Now       func() time.Time
+	// TTL bounds a grant's lifetime from the prepared authority; nil, or a
+	// value outside (0, podauth.MaxChildWorkflowGrantTTL], uses the maximum.
+	TTL func(Authority) time.Duration
+}
+
+func (s *GrantIssuer) ttl(authority Authority) time.Duration {
+	if s.TTL != nil {
+		if ttl := s.TTL(authority); ttl > 0 && ttl <= podauth.MaxChildWorkflowGrantTTL {
+			return ttl
+		}
+	}
+	return podauth.MaxChildWorkflowGrantTTL
 }
 
 // Acquire implements the harness's trusted access provider. A repeated launch
@@ -57,7 +69,7 @@ func (s *GrantIssuer) Acquire(ctx context.Context, env apiv1.InvocationEnvelope)
 	token, grant, err := s.Grants.MintChildWorkflowGrant(podauth.ChildWorkflowGrant{
 		Gaggle: origin.Gaggle, RunID: origin.RunID, StageOccurrence: origin.StageOccurrence,
 		AttemptID: origin.AttemptID, ConfigDigest: origin.ConfigDigest, PolicyDigest: origin.PolicyDigest,
-	}, podauth.MaxChildWorkflowGrantTTL)
+	}, s.ttl(authority))
 	if err != nil {
 		return nil, nil, err
 	}

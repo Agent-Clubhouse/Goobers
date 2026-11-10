@@ -89,10 +89,11 @@ type GaggleSpec struct {
 	// defaults: observation is enabled and destructive behavior is disabled.
 	// +optional
 	Health *GaggleHealthPolicy `json:"health,omitempty" yaml:"health,omitempty"`
-	// Backprop overrides Backprop attribution for this gaggle's workflows
-	// without editing them. mode=shadow observes every workflow that declares
-	// neither its own backprop.mode nor enabled=true; the override can never
-	// activate filing. Omitted or mode=off applies no override.
+	// Backprop is the gaggle-level Backprop default for workflows that
+	// declare neither their own backprop.mode nor enabled=true. mode=shadow
+	// observes them on demand without editing them; mode=active enrolls
+	// workflows pinned to DSL 3.0+ with preview features acknowledged.
+	// Omitted or mode=off applies no default.
 	// +optional
 	Backprop *GaggleBackprop `json:"backprop,omitempty" yaml:"backprop,omitempty"`
 	// OutboxMirrorPath is the default local filesystem root where workflows in
@@ -157,14 +158,39 @@ type GaggleSpec struct {
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
 }
 
-// GaggleBackprop is the gaggle-level Backprop override.
+// GaggleBackprop is the gaggle-level Backprop default inherited by workflows
+// that declare neither their own mode nor enabled=true.
 type GaggleBackprop struct {
-	// Mode is the override applied to workflows without their own mode.
-	// Only off and shadow are accepted: a gaggle cannot enroll workflows
-	// in active filing.
-	// +kubebuilder:validation:Enum=off;shadow
+	// Mode is the default applied to workflows without their own mode. off
+	// applies none; shadow observes them on demand; active enrolls eligible
+	// workflows (DSL 3.0+ with preview features acknowledged) in active
+	// attribution, and observes nothing for ineligible ones.
+	// +kubebuilder:validation:Enum=off;shadow;active
 	// +kubebuilder:validation:Required
 	Mode BackpropMode `json:"mode" yaml:"mode"`
+	// Version is the attribution contract inheriting workflows use. Omitted
+	// means v1. Preview.
+	// +kubebuilder:validation:Enum=v1
+	// +optional
+	Version string `json:"version,omitempty" yaml:"version,omitempty"`
+	// Granularity is the default granularity for every workflow in the gaggle
+	// that omits its own, including workflows that declare their own mode.
+	// Preview.
+	// +kubebuilder:validation:Enum=run;stage
+	// +optional
+	Granularity BackpropGranularity `json:"granularity,omitempty" yaml:"granularity,omitempty"`
+	// GroundTruth is the default ground-truth label source contract for every
+	// workflow in the gaggle that omits its own, including workflows that
+	// declare their own mode. Preview.
+	// +optional
+	GroundTruth *BackpropGroundTruth `json:"groundTruth,omitempty" yaml:"groundTruth,omitempty"`
+}
+
+func (g *GaggleBackprop) version() string {
+	if g == nil || g.Version == "" {
+		return DefaultBackpropVersion
+	}
+	return g.Version
 }
 
 // GaggleHealthPolicy is the gaggle-scoped health contract. Runtime code resolves

@@ -318,14 +318,14 @@ func TestHTTPStoreFallbackErrorAndWriteContentType(t *testing.T) {
 	var contentType string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		contentType = request.Header.Get("Content-Type")
-		w.WriteHeader(http.StatusBadGateway)
+		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("  " + strings.Repeat("x", 401) + "  "))
 	}))
 	t.Cleanup(server.Close)
 	store := planeClient(t, server)
 	_, err := store.Put(t.Context(), KeyBlockedRecords, []byte(`{}`), "")
 	var planeErr *Error
-	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
+	if !errors.As(err, &planeErr) || planeErr.Code != "http_500" || planeErr.Message != strings.Repeat("x", 400)+"…" {
 		t.Fatalf("error = %#v", planeErr)
 	}
 	if contentType != "application/json" {

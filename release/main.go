@@ -19,9 +19,19 @@ const versionPkg = "github.com/goobers/goobers/internal/version"
 // a const, so tests can point the build at a small in-module package instead of
 // cross-compiling the whole daemon.
 var (
-	buildPackage          = "./cmd/goobers"
+	releaseBinaries = []releaseBinary{
+		{name: "goobers", buildPackage: "./cmd/goobers", publish: true},
+		{name: "goobers-cloud", buildPackage: "./cmd/goobers-cloud", publish: false},
+	}
+	buildPackage          = releaseBinaries[0].buildPackage
 	portalAssetsDirectory = filepath.Join("internal", "portalassets", "dist")
 )
+
+type releaseBinary struct {
+	name         string
+	buildPackage string
+	publish      bool
+}
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {

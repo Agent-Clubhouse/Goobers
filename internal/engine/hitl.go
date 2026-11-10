@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -14,6 +16,9 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
+
+// ErrHITLRunNotFound reports that no engine workflow is addressable for a run.
+var ErrHITLRunNotFound = errors.New("engine: no engine workflow is addressable for this run")
 
 // hitl.go is decision 005 R8: the versioned Temporal protocol through which an
 // operator resolves an escalation, reruns a stage, or resumes from a terminal
@@ -80,8 +85,8 @@ const (
 	HITLStateQuery = "goobers.hitl-state.v1"
 )
 
-// HITLIntentKind is the operator intent being delivered. The three kinds are
-// the three in-process runner paths #3847 refuses for an engine-driven run.
+// HITLIntentKind is the operator intent being delivered. The kinds mirror the
+// in-process runner paths available to engine-driven runs.
 type HITLIntentKind string
 
 const (
@@ -92,6 +97,9 @@ const (
 	// HITLRerunStage reruns one agentic stage with an instruction addendum,
 	// mirroring Runner.RerunStage.
 	HITLRerunStage HITLIntentKind = "rerun-stage"
+	// HITLRetryStage retries one previously-run deterministic task without
+	// changing its inputs or supplying agent instructions.
+	HITLRetryStage HITLIntentKind = "retry-stage"
 	// HITLResumeFromTerminal resumes the walk at an explicit workflow state
 	// (or completes it), mirroring Runner.ResumeFromTerminal's raw form.
 	HITLResumeFromTerminal HITLIntentKind = "resume-from-terminal"
@@ -191,12 +199,12 @@ type HITLIntent struct {
 	// RunID is the run this intent is for — the containment check. It must
 	// equal the workflow's own pinned RunID.
 	RunID string `json:"runId"`
-	// RequestID is the idempotency key. The daemon also uses it as the
-	// Temporal UpdateID, so the server deduplicates a retried delivery before
-	// it ever reaches the workflow; the workflow deduplicates again against
-	// its own record so a key reused with a DIFFERENT payload is refused
-	// rather than silently applied (the same rule the runner-side
-	// escalation-resolution marker enforces).
+	// RequestID is the idempotency key. The Temporal UpdateID is
+	// HITLIntentUpdateID(intent), which binds the full payload, so the server
+	// deduplicates only an exact retry; the validator refuses any other
+	// UpdateID, and the workflow refuses a key reused with a DIFFERENT
+	// payload rather than silently applying it (the same rule the
+	// runner-side escalation-resolution marker enforces).
 	RequestID string `json:"requestId"`
 	// Actor is the caller identity. Required, journaled, and matched against
 	// the pinned HITLPolicy.Actors when one is declared.
@@ -215,7 +223,8 @@ type HITLIntent struct {
 	Decision   string `json:"decision,omitempty"`
 	Rationale  string `json:"rationale,omitempty"`
 
-	// Stage and InstructionAddendum carry HITLRerunStage.
+	// Stage carries HITLRerunStage and HITLRetryStage. InstructionAddendum is
+	// required only for HITLRerunStage.
 	Stage               string `json:"stage,omitempty"`
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
 
@@ -249,13 +258,37 @@ type HITLAck struct {
 	// Duplicate is true when this ack replays an earlier, identical intent
 	// rather than describing a new acceptance.
 	Duplicate bool `json:"duplicate,omitempty"`
+	// IntentDigest is HITLIntentDigest of the intent this ack answers, so a
+	// caller can refuse an acknowledgement for different content.
+	IntentDigest string `json:"intentDigest,omitempty"`
+}
+
+// HITLIntentDigest identifies an intent's full content: contract, run,
+// request ID and every field the workflow fingerprints.
+func HITLIntentDigest(intent HITLIntent) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s", intent.Protocol, intent.Version, strings.TrimSpace(intent.RunID), intent.RequestID, hitlFingerprint(intent))))
+	return hex.EncodeToString(sum[:])
+}
+
+// HITLIntentUpdateID binds Temporal transport deduplication to the intent's
+// full payload, as GateDecisionUpdateID does for gate decisions.
+func HITLIntentUpdateID(intent HITLIntent) string {
+	return HITLUpdateName + ":" + HITLIntentDigest(intent)
 }
 
 // HITLState is the HITLStateQuery answer.
 type HITLState struct {
-	Protocol string `json:"protocol"`
-	Version  int    `json:"version"`
-	Enabled  bool   `json:"enabled"`
+	Protocol                  string        `json:"protocol"`
+	Version                   int           `json:"version"`
+	Enabled                   bool          `json:"enabled"`
+	LiveTerminalInterventions bool          `json:"liveTerminalInterventions,omitempty"`
+	Delivery                  *HITLDelivery `json:"delivery,omitempty"`
+	// A bounded retry window, never the workflow's full deduplication ledger.
+	AcknowledgedGenerations map[string]uint64 `json:"acknowledgedGenerations,omitempty"`
+	// These fields answer the request-scoped query without exposing old keys.
+	RequestKnown      bool   `json:"requestKnown,omitempty"`
+	RequestExpired    bool   `json:"requestExpired,omitempty"`
+	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
 	// Phase is "executing", "awaiting-operator", or "settled".
 	Phase string `json:"phase"`
 	// TerminalGeneration is the number of terminals the run has produced. An
@@ -335,10 +368,11 @@ type hitlResumePlan struct {
 // derived from history: pinned input, the compiled machine, and the walk's own
 // deterministic progress.
 type hitlSession struct {
-	policy *HITLPolicy
-	runID  string
-	m      *wf.Machine
-	rec    *runJournal
+	policy        *HITLPolicy
+	runID         string
+	m             *wf.Machine
+	rec           *runJournal
+	gateDecisions *gateDecisionSession
 
 	mu workflow.Mutex
 
@@ -359,15 +393,20 @@ type hitlSession struct {
 	consumed map[string]bool
 	// acks records every accepted intent's outcome, keyed by request id, for
 	// in-workflow deduplication.
-	acks map[string]HITLAck
+	acks       map[string]HITLAck
+	recentAcks []string
 	// fingerprints pins the payload each request id was first seen with, so a
 	// key reused for a DIFFERENT intent is refused instead of replaying the
 	// first one's ack.
-	fingerprints map[string]string
+	fingerprints      map[string]string
+	sharedRequestKeys bool
 
 	// wroteTerminal reports that settle journaled the run's FINAL terminal,
 	// so run() does not write a second one for the same outcome.
 	wroteTerminal bool
+	liveTerminal  bool
+	terminalSeq   uint64
+	delivery      *terminalDelivery
 }
 
 func newHITLSession(in RunInput, m *wf.Machine, rec *runJournal) *hitlSession {
@@ -390,19 +429,27 @@ func newHITLSession(in RunInput, m *wf.Machine, rec *runJournal) *hitlSession {
 // registration emits a history event, so this is invisible to replay of
 // histories recorded before the protocol existed.
 func (s *hitlSession) register(ctx workflow.Context) error {
+	if s.rec.live && s.policy.enabled() {
+		s.liveTerminal = workflow.GetVersion(ctx, hitlLiveTerminalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	}
 	if err := registerOperatorMessages(ctx, s.runID); err != nil {
 		return err
 	}
 	s.mu = workflow.NewMutex(ctx)
 	err := workflow.SetUpdateHandlerWithOptions(
-		ctx, HITLUpdateName, s.handle,
-		workflow.UpdateHandlerOptions{Validator: s.validate},
+		ctx, HITLUpdateName, s.handleBound,
+		workflow.UpdateHandlerOptions{Validator: s.validateUpdate},
 	)
 	if err != nil {
 		return fmt.Errorf("engine: register HITL update handler: %w", err)
 	}
 	if err := workflow.SetQueryHandler(ctx, HITLStateQuery, s.state); err != nil {
 		return fmt.Errorf("engine: register HITL state query: %w", err)
+	}
+	if s.liveTerminal {
+		if err := workflow.SetQueryHandler(ctx, HITLRequestStateQuery, s.requestState); err != nil {
+			return fmt.Errorf("engine: register terminal request query: %w", err)
+		}
 	}
 	return nil
 }
@@ -415,12 +462,44 @@ func (s *hitlSession) state() (HITLState, error) {
 		Phase:              s.phase,
 		TerminalGeneration: s.generation,
 	}
+	st.LiveTerminalInterventions = s.liveTerminal
+	if s.liveTerminal && len(s.recentAcks) > 0 {
+		st.AcknowledgedGenerations = make(map[string]uint64, len(s.recentAcks))
+		for _, id := range s.recentAcks {
+			st.AcknowledgedGenerations[id] = s.acks[id].TerminalGeneration
+		}
+	}
+	if s.delivery != nil {
+		st.Delivery = &HITLDelivery{RequestID: s.delivery.request.Transition.RequestID, Status: "intervention pending (journal delivery retrying)"}
+	}
 	if s.phase == hitlPhaseAwaiting {
 		st.TerminalStatus = s.terminal.Status
 		st.TerminalState = s.terminal.FinalState
 		st.DeadlineUnix = s.deadline.Unix()
 	}
 	return st, nil
+}
+
+// validateUpdate binds the transport UpdateID to the payload before the
+// content checks, exactly as the gate-decision validator does.
+func (s *hitlSession) validateUpdate(ctx workflow.Context, intent HITLIntent) error {
+	info := workflow.GetCurrentUpdateInfo(ctx)
+	if info == nil || info.ID != HITLIntentUpdateID(intent) {
+		return hitlRefusal(HITLErrInvalidIntent,
+			"Temporal UpdateID does not bind requestId %q to its intent payload", intent.RequestID)
+	}
+	return s.validate(intent)
+}
+
+// handleBound stamps each acknowledgement with the digest of the intent it
+// answers. A replayed ack is returned only for an identical fingerprint, so
+// the current intent's digest is the replayed intent's too.
+func (s *hitlSession) handleBound(ctx workflow.Context, intent HITLIntent) (HITLAck, error) {
+	ack, err := s.handle(ctx, intent)
+	if err == nil {
+		ack.IntentDigest = HITLIntentDigest(intent)
+	}
+	return ack, err
 }
 
 // validate is the update validator. Temporal guarantees it runs before the
@@ -465,6 +544,9 @@ func (s *hitlSession) validate(intent HITLIntent) error {
 	// handler can answer it idempotently — replaying the first delivery's ack,
 	// or refusing a key reused for a different payload. Everything else must
 	// be in the accepting phase.
+	if operatorKeyOwnedByOther(s.sharedRequestKeys, s.fingerprints, HITLProtocol, intent.RequestID) {
+		return hitlRefusal(HITLErrKeyReused, "requestId %q belongs to the gate-decision protocol", intent.RequestID)
+	}
 	if _, seen := s.fingerprints[intent.RequestID]; seen {
 		return nil
 	}
@@ -524,6 +606,13 @@ func validateHITLShape(intent HITLIntent) error {
 		if strings.TrimSpace(intent.InstructionAddendum) == "" {
 			return hitlRefusal(HITLErrInvalidIntent, "instruction addendum is required to rerun a stage")
 		}
+	case HITLRetryStage:
+		if strings.TrimSpace(intent.Stage) == "" {
+			return hitlRefusal(HITLErrInvalidIntent, "stage is required to retry a deterministic task")
+		}
+		if strings.TrimSpace(intent.InstructionAddendum) != "" {
+			return hitlRefusal(HITLErrInvalidIntent, "deterministic retry does not accept an instruction addendum")
+		}
 	case HITLResumeFromTerminal:
 		target := strings.TrimSpace(intent.Target)
 		if target == "" && !intent.Complete {
@@ -547,7 +636,7 @@ func validateHITLShape(intent HITLIntent) error {
 // actually taken the intent up — so the ack the daemon reports success on
 // means "this run has resumed", not "this run was told to".
 func (s *hitlSession) handle(ctx workflow.Context, intent HITLIntent) (HITLAck, error) {
-	fingerprint := hitlFingerprint(intent)
+	fingerprint := operatorRequestFingerprint(s.sharedRequestKeys, HITLProtocol, hitlFingerprint(intent))
 	if ack, err, decided := s.replay(intent.RequestID, fingerprint); decided {
 		return ack, err
 	}
@@ -577,20 +666,29 @@ func (s *hitlSession) handle(ctx workflow.Context, intent HITLIntent) (HITLAck, 
 		return HITLAck{}, err
 	}
 	s.fingerprints[intent.RequestID] = fingerprint
+	if s.liveTerminal {
+		if err := s.commitTerminalIntent(ctx, intent, plan); err != nil {
+			return HITLAck{}, err
+		}
+	}
 
 	if plan == nil {
 		// A deny: journaled, and the run stays exactly as terminal as it was.
-		s.recordDenied(ctx, intent)
+		if !s.liveTerminal {
+			s.recordDenied(ctx, intent)
+		}
 		ack := HITLAck{
 			Protocol: HITLProtocol, Version: HITLProtocolVersion,
 			RunID: s.runID, RequestID: intent.RequestID, Kind: intent.Kind,
 			Resumed: false, TerminalGeneration: s.generation,
 		}
-		s.acks[intent.RequestID] = ack
+		s.rememberTerminalAck(intent.RequestID, ack)
 		return ack, nil
 	}
 
-	s.recordResumed(ctx, intent, *plan)
+	if !s.liveTerminal {
+		s.recordResumed(ctx, intent, *plan)
+	}
 	s.pending = plan
 	// Block until the walk has consumed the plan. The walk is parked in
 	// AwaitWithTimeout on exactly this condition, so it wakes within this same
@@ -635,7 +733,9 @@ func (s *hitlSession) plan(intent HITLIntent) (*hitlResumePlan, error) {
 	case HITLResolveEscalation:
 		return s.planResolve(intent)
 	case HITLRerunStage:
-		return s.planRerun(intent)
+		return s.planRerun(intent, false)
+	case HITLRetryStage:
+		return s.planRerun(intent, true)
 	case HITLResumeFromTerminal:
 		return s.planResume(intent)
 	default:
@@ -684,7 +784,7 @@ func (s *hitlSession) planResolve(intent HITLIntent) (*hitlResumePlan, error) {
 // names none — the same "pass" default the daemon's approve verb applies.
 const gateDefaultDecision = "pass"
 
-func (s *hitlSession) planRerun(intent HITLIntent) (*hitlResumePlan, error) {
+func (s *hitlSession) planRerun(intent HITLIntent, deterministicRetry bool) (*hitlResumePlan, error) {
 	stage := strings.TrimSpace(intent.Stage)
 	// A rerun re-enters a stage to do work again, which only means anything
 	// for an escalated run: a run that FAILED has an unresolved stage failure
@@ -696,11 +796,20 @@ func (s *hitlSession) planRerun(intent HITLIntent) (*hitlResumePlan, error) {
 			"run %s is %s; only an escalated run can rerun a stage", s.runID, s.terminal.Status)
 	}
 	if task, ok := s.m.Task(stage); ok {
-		if task.Type != apiv1.TaskAgentic {
+		if deterministicRetry {
+			if task.Type != apiv1.TaskDeterministic {
+				return nil, hitlRefusal(HITLErrNotResumable,
+					"stage %q is agentic; deterministic retry requires a deterministic task", stage)
+			}
+		} else if task.Type != apiv1.TaskAgentic {
 			return nil, hitlRefusal(HITLErrNotResumable,
 				"stage %q is deterministic; instruction addenda require an agentic stage", stage)
 		}
 	} else if g, ok := s.m.Gate(stage); ok {
+		if deterministicRetry {
+			return nil, hitlRefusal(HITLErrNotResumable,
+				"stage %q is a gate; deterministic retry requires a deterministic task", stage)
+		}
 		if g.Evaluator != apiv1.EvaluatorAgentic {
 			return nil, hitlRefusal(HITLErrNotResumable,
 				"stage %q is not an agentic reviewer gate", stage)
@@ -760,8 +869,12 @@ func (s *hitlSession) resumableState(target, what string) (string, error) {
 // rationale — so the projected journal of an engine run an operator resolved
 // is indistinguishable from a local run's on the conformance surface.
 func (s *hitlSession) recordResumed(ctx workflow.Context, intent HITLIntent, plan hitlResumePlan) {
-	if plan.kind == HITLRerunStage {
-		s.rec.append(ctx, journal.Event{
+	s.rec.append(ctx, s.resumedEvent(intent, plan))
+}
+
+func (s *hitlSession) resumedEvent(intent HITLIntent, plan hitlResumePlan) journal.Event {
+	if plan.kind == HITLRerunStage || plan.kind == HITLRetryStage {
+		return journal.Event{
 			Type:                journal.EventStageRerunRequested,
 			Stage:               plan.stage,
 			Attempt:             plan.attempt,
@@ -769,8 +882,7 @@ func (s *hitlSession) recordResumed(ctx workflow.Context, intent HITLIntent, pla
 			Actor:               strings.TrimSpace(intent.Actor),
 			InstructionAddendum: plan.addendum,
 			Runner:              hitlProvenance(intent),
-		})
-		return
+		}
 	}
 	action := "resume"
 	if intent.Kind == HITLResolveEscalation {
@@ -793,7 +905,7 @@ func (s *hitlSession) recordResumed(ctx workflow.Context, intent HITLIntent, pla
 	if ev.Complete {
 		ev.Target = ""
 	}
-	s.rec.append(ctx, ev)
+	return ev
 }
 
 // recordDenied journals a deny exactly as the daemon's in-process path does:
@@ -816,11 +928,12 @@ const HITLEscalationResolutionMarker = "escalation.resolution"
 
 func hitlProvenance(intent HITLIntent) map[string]any {
 	return map[string]any{
-		"protocol":       HITLProtocol,
-		"version":        HITLProtocolVersion,
-		"intent":         string(intent.Kind),
-		"idempotencyKey": intent.RequestID,
-		"actor":          strings.TrimSpace(intent.Actor),
+		"protocol":           HITLProtocol,
+		"version":            HITLProtocolVersion,
+		"intent":             string(intent.Kind),
+		"idempotencyKey":     intent.RequestID,
+		"actor":              strings.TrimSpace(intent.Actor),
+		"terminalGeneration": intent.ExpectedTerminalGeneration,
 	}
 }
 
@@ -927,7 +1040,13 @@ func (s *hitlSession) settle(ctx workflow.Context, out RunResult) (plan hitlResu
 	s.phase = hitlPhaseAwaiting
 	s.deadline = workflow.Now(ctx).Add(s.policy.wait())
 
-	ok, awaitErr := workflow.AwaitWithTimeout(ctx, s.policy.wait(), func() bool { return s.pending != nil })
+	var ok bool
+	var awaitErr error
+	if s.liveTerminal {
+		ok, awaitErr = s.awaitTerminalIntent(ctx)
+	} else {
+		ok, awaitErr = workflow.AwaitWithTimeout(ctx, s.policy.wait(), func() bool { return s.pending != nil })
+	}
 	if awaitErr != nil {
 		// Cancellation while holding a terminal open. The run's terminal is
 		// already journaled; run()'s cancellation arm records the abort cause
@@ -951,12 +1070,12 @@ func (s *hitlSession) settle(ctx workflow.Context, out RunResult) (plan hitlResu
 	// outcome, and run() owns writing it unless this hook holds that one open
 	// too.
 	s.wroteTerminal = false
-	s.acks[accepted.requestID] = HITLAck{
+	s.rememberTerminalAck(accepted.requestID, HITLAck{
 		Protocol: HITLProtocol, Version: HITLProtocolVersion,
 		RunID: s.runID, RequestID: accepted.requestID, Kind: accepted.kind,
 		Resumed: true, ResumeState: accepted.state, Attempt: accepted.attempt,
 		TerminalGeneration: s.generation,
-	}
+	})
 	s.consumed[accepted.requestID] = true
 	return accepted, true, true, nil
 }
@@ -978,8 +1097,16 @@ func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) error 
 	if err := s.rec.runFinished(ctx, phase, journal.RunDispositionProduced, out.FinalState); err != nil {
 		return err
 	}
-	s.generation++
-	s.rec.emitTerminal(ctx)
+	if s.liveTerminal {
+		if err := s.confirmTerminalBoundary(ctx); err != nil {
+			return err
+		}
+		s.generation++
+	} else {
+		// Preserve the N-1 query-visible ordering while emission is in flight.
+		s.generation++
+		s.rec.emitTerminal(ctx)
+	}
 	return nil
 }
 

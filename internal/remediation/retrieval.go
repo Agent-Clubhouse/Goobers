@@ -206,9 +206,8 @@ func (i *Index) Retrieve(query Query, options Options) []Result {
 		}
 		score := similarity * freshness(item.record, query.ConfigDigest, now) * outcomeWeight(item.record.DidItHelp)
 		results = append(results, Result{
-			Record:  item.record,
-			Score:   score,
-			FewShot: fewShot(item.record),
+			Record: item.record,
+			Score:  score,
 		})
 	}
 	sort.SliceStable(results, func(a, b int) bool {
@@ -219,6 +218,9 @@ func (i *Index) Retrieve(query Query, options Options) []Result {
 	})
 	if len(results) > k {
 		results = results[:k]
+	}
+	for n := range results {
+		results[n].FewShot = fewShot(results[n].Record)
 	}
 	return results
 }

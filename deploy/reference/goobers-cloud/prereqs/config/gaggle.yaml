@@ -1,0 +1,17 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: reference
+spec:
+  displayName: Cloud reference
+  project:
+    provider: github
+    owner: CHANGE-ME
+    name: CHANGE-ME
+    branch: main
+  backlog:
+    provider: github
+    project: CHANGE-ME/CHANGE-ME
+    labels: [goobers:approved]
+  isolation:
+    namespace: gaggle-reference

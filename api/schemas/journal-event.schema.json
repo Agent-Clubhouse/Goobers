@@ -524,15 +524,16 @@
         "failurePolicy": { "description": "Map failure policy at freeze time.", "type": "string", "enum": ["fail_fast", "all_or_nothing", "continue_on_error"], "x-conformance": "normative" },
         "itemTimeoutSeconds": { "description": "Per-item budget in seconds at freeze time; absent when unbounded.", "type": "integer", "minimum": 0, "x-conformance": "normative" },
         "maxConcurrent": { "description": "Effective concurrency bound at freeze time.", "type": "integer", "minimum": 1, "maximum": 32, "x-conformance": "normative" },
+        "rosterDigest": { "description": "Content address of the normalized frozen roster whose item bytes are loaded at dispatch.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
         "items": {
-          "description": "Normalized roster: unique identities sorted by bytewise UTF-8 order; item i runs as branch i+1.",
+          "description": "Normalized roster descriptors: unique identities sorted by bytewise UTF-8 order; item i runs as branch i+1. Frozen-blob records may also carry the canonical item object.",
           "type": "array",
           "maxItems": 32,
           "x-conformance": "normative",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["identity", "digest", "item"],
+            "required": ["identity", "digest"],
             "properties": {
               "identity": { "description": "Author-chosen stable item identity.", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
               "digest": { "description": "SHA-256 over the RFC 8785 serialization of {identity, item}.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },

@@ -237,6 +237,7 @@ func readVerdictResult(t *testing.T, path string) map[string]interface{} {
 func adoMergeReviewMux(t *testing.T, repo providers.RepositoryRef, prNumber int, headSHA, baseSHA, status string, posted *bool) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
+	serveADOAuthenticatedIdentity(t, mux, repo.Owner)
 	prBase := "/" + repo.Owner + "/" + repo.Project + "/_apis/git/repositories/" + repo.Name + "/pullrequests"
 	mux.HandleFunc(prBase, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
@@ -284,6 +285,20 @@ func adoMergeReviewMux(t *testing.T, repo providers.RepositoryRef, prNumber int,
 		})
 	})
 	return mux
+}
+
+// Publishing the first authoritative verdict reads legacy thread evidence and
+// attributes it to the authenticated identity GUID before committing a snapshot.
+func serveADOAuthenticatedIdentity(t *testing.T, mux *http.ServeMux, organization string) {
+	t.Helper()
+	mux.HandleFunc("/"+organization+"/_apis/connectionData", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("connectionData method = %s, want GET", r.Method)
+		}
+		writeJSONResp(t, w, map[string]interface{}{
+			"authenticatedUser": map[string]string{"id": "goober-guid", "providerDisplayName": "goober"},
+		})
+	})
 }
 
 // serveADOPullRequestIterations serves the PR iterations list with ids out of
@@ -595,6 +610,7 @@ func TestRunApplyVerdictADONeedsChangesBridgesToRemediation(t *testing.T) {
 func adoNeedsChangesMux(t *testing.T, repo providers.RepositoryRef, prNumber int, headSHA, baseSHA string, statusState, labelName, threadContent *string) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
+	serveADOAuthenticatedIdentity(t, mux, repo.Owner)
 	prBase := "/" + repo.Owner + "/" + repo.Project + "/_apis/git/repositories/" + repo.Name + "/pullrequests"
 	pr := prBase + "/" + strconv.Itoa(prNumber)
 	mux.HandleFunc(prBase, func(w http.ResponseWriter, _ *http.Request) {
@@ -666,6 +682,10 @@ func adoNeedsChangesMux(t *testing.T, repo providers.RepositoryRef, prNumber int
 		_, _ = w.Write([]byte(`{"id":"label-guid","name":"goobers:needs-remediation"}`))
 	})
 	mux.HandleFunc(pr+"/threads", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		}
 		if r.Method != http.MethodPost {
 			t.Fatalf("threads method = %s, want POST", r.Method)
 		}

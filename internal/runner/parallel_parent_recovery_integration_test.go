@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -21,7 +22,7 @@ func TestIntegrationParallelParentRecoveryFindsAcceptedChildBeforeReplacement(t 
 	r, run, frame, handoff, fork := prepareChildWaitRuntime(t)
 	par := seedChildRecoveryParallel(t, run)
 	frame.jr = &branchJournal{run: run, branch: 1}
-	if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+	if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, runsemantics.NewStageUsageTotals()); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := r.createStageWorkspace(t.Context(), frame.in, frame.t.Name, apiv1.WorkspaceRepo, false, "")

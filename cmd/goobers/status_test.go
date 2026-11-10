@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -73,6 +75,8 @@ func TestStatusSurfacesBackpropEnrollment(t *testing.T) {
 		{name: "explicit off beats gaggle override", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}},
 		{name: "legacy enabled beats gaggle override", config: &apiv1.BackpropConfig{Enabled: true, Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}, wantEnabled: true, wantLine: "backprop: active (v1)"},
 		{name: "gaggle override off", override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeOff}},
+		{name: "gaggle active default", override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive}, wantEnabled: true, wantLine: "backprop: active (v1)"},
+		{name: "workflow shadow beats gaggle active", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeShadow, Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive}, wantLine: "backprop: shadow (v1)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := readservice.WorkflowBackpropFor(test.config, test.override)
@@ -2451,7 +2455,7 @@ func TestReportAVExclusionReadiness(t *testing.T) {
 	t.Run("windows, none excluded", func(t *testing.T) {
 		root := t.TempDir()
 		layout := instance.NewLayout(root)
-		deps := avExclusionDeps{hostOS: "windows", tempDir: filepath.Join(root, "tmp"), query: func(context.Context) ([]string, error) {
+		deps := runtimewiring.AvExclusionDeps{HostOS: "windows", TempDir: filepath.Join(root, "tmp"), Query: func(context.Context) ([]string, error) {
 			return nil, nil
 		}}
 		var buf bytes.Buffer
@@ -2467,7 +2471,7 @@ func TestReportAVExclusionReadiness(t *testing.T) {
 	t.Run("windows, query fails: reports unverified, never a false all-clear", func(t *testing.T) {
 		root := t.TempDir()
 		layout := instance.NewLayout(root)
-		deps := avExclusionDeps{hostOS: "windows", tempDir: filepath.Join(root, "tmp"), query: func(context.Context) ([]string, error) {
+		deps := runtimewiring.AvExclusionDeps{HostOS: "windows", TempDir: filepath.Join(root, "tmp"), Query: func(context.Context) ([]string, error) {
 			return nil, errors.New("defender: powershell unavailable")
 		}}
 		var buf bytes.Buffer
@@ -2484,7 +2488,7 @@ func TestReportAVExclusionReadiness(t *testing.T) {
 	t.Run("off windows: silent, reader never invoked", func(t *testing.T) {
 		root := t.TempDir()
 		layout := instance.NewLayout(root)
-		deps := avExclusionDeps{hostOS: "linux", tempDir: filepath.Join(root, "tmp"), query: func(context.Context) ([]string, error) {
+		deps := runtimewiring.AvExclusionDeps{HostOS: "linux", TempDir: filepath.Join(root, "tmp"), Query: func(context.Context) ([]string, error) {
 			t.Fatal("exclusion list must not be read off Windows")
 			return nil, nil
 		}}

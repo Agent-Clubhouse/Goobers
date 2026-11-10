@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // ContainedParentRecoveredKind is host-only acknowledged workspace recovery.
@@ -124,7 +125,7 @@ func (r *Runner) restoreContainedParentWorkspace(ctx context.Context, tf *taskFr
 	return nil
 }
 
-func restoreContainedParentUsage(tf taskFrame, total *stageUsageTotals, instruction *string) error {
+func restoreContainedParentUsage(tf taskFrame, total *runsemantics.StageUsageTotals, instruction *string) error {
 	if tf.containedRecovery == nil {
 		return nil
 	}
@@ -223,7 +224,7 @@ func selectParentRecovery(reader *journal.Reader, events []journal.Event, runID,
 	return result, true, nil
 }
 
-func (r *Runner) restoreParentProgress(ctx context.Context, tf *taskFrame, total *stageUsageTotals, instruction *string) error {
+func (r *Runner) restoreParentProgress(ctx context.Context, tf *taskFrame, total *runsemantics.StageUsageTotals, instruction *string) error {
 	if err := restoreContainedParentUsage(*tf, total, instruction); err != nil {
 		return err
 	}

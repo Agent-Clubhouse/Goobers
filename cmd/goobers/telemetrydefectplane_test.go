@@ -57,6 +57,30 @@ func decodeCandidateFindings(t *testing.T, stdout string) candidateFindingsArtif
 	return artifact
 }
 
+func TestDefectPlanePathSignedScoreRoundTrip(t *testing.T) {
+	negative, zero := -0.4, 0.0
+	for name, score := range map[string]*float64{"negative": &negative, "zero": &zero, "unavailable": nil} {
+		t.Run(name, func(t *testing.T) {
+			paths := []creditgraph.ContributingPath{{
+				Nodes: []string{"stage:verify"}, Share: 0.6, Score: score, Confidence: 0.8,
+			}}
+			want := mustCandidateJSON(t, paths)
+			wireJSON := mustCandidateJSON(t, wireContributingPaths(paths))
+			if string(wireJSON) != string(want) {
+				t.Fatalf("signed attribution lost on wire: got %s, want %s", wireJSON, want)
+			}
+			var decoded []telemetryclient.ContributingPath
+			if err := json.Unmarshal(wireJSON, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			got := mustCandidateJSON(t, planeContributingPaths(decoded))
+			if string(got) != string(want) {
+				t.Fatalf("signed attribution lost on projection: got %s, want %s", got, want)
+			}
+		})
+	}
+}
+
 func TestDefectAggregateResponsePreservesFaultAudit(t *testing.T) {
 	now := time.Date(2026, time.September, 25, 7, 0, 0, 0, time.UTC)
 	audit := &creditgraph.FaultAuditReport{

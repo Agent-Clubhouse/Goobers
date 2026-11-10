@@ -95,12 +95,10 @@ func TestCanceledEngineRunWritesItsTerminal(t *testing.T) {
 		t.Fatal("cancelled run recorded no run_failed cause before its terminal")
 	}
 
-	// And the projection the repair reconciler builds is ACCEPTED: before the
-	// terminal existed this returned ErrUnprojectable and the run could never
-	// leave PhaseRunning on disk.
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	// The recorded terminal can also be persisted through the live writer.
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun on a cancelled run: %v — the reconciler cannot repair a run it refuses to project", err)
+		t.Fatalf("write cancelled run journal: %v", err)
 	}
 	reader, err := journal.OpenRead(dir)
 	if err != nil {

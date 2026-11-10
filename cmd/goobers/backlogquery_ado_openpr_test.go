@@ -160,12 +160,12 @@ func adoOpenPRBackstopServer(t *testing.T, failPRs bool) *httptest.Server {
 			return
 		}
 		writeADOJSON(t, w, map[string]any{"value": []map[string]any{
-			{"pullRequestId": 7, "status": "active", "sourceRefName": "refs/heads/goobers/run-1", "targetRefName": "refs/heads/main"},
+			{"pullRequestId": 7, "status": "active", "description": strings.Repeat("x", 400), "sourceRefName": "refs/heads/goobers/run-1", "targetRefName": "refs/heads/main"},
 			{"pullRequestId": 9, "status": "active", "sourceRefName": "refs/heads/human/topic", "targetRefName": "refs/heads/main"},
 		}})
 	})
 	mux.HandleFunc("/org/backlog/_apis/git/repositories/repo/pullrequests/7", func(w http.ResponseWriter, r *http.Request) {
-		writeADOJSON(t, w, map[string]any{"pullRequestId": 7, "status": "active", "description": "Implementation.\n\nFixes #42"})
+		writeADOJSON(t, w, map[string]any{"pullRequestId": 7, "status": "active", "description": strings.Repeat("x", 600) + "\n\nFixes #42"})
 	})
 	mux.HandleFunc("/org/backlog/_apis/git/repositories/repo/pullrequests/7/workitems", func(w http.ResponseWriter, r *http.Request) {
 		writeADOJSON(t, w, map[string]any{"value": []map[string]string{{"id": "43"}}})

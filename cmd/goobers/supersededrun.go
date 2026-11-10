@@ -12,7 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // supersededRunEvidence is what a completed run's journal says about why it
@@ -100,7 +100,7 @@ func supersededRunFromEvents(events []journal.Event, finalState string) (superse
 			continue
 		}
 		switch {
-		case event.Type == journal.EventError && event.Error != nil && event.Error.Code == runner.WorkspaceHeadMovedErrorCode:
+		case event.Type == journal.EventError && event.Error != nil && event.Error.Code == runsemantics.WorkspaceHeadMovedErrorCode:
 			superseded = true
 		case event.Type == journal.EventStageFinished:
 			stale := event.Status == string(apiv1.ResultNoWork) && stringOutputValue(event.Outputs, "outcome") == prClaimOutcomeStaleSelection

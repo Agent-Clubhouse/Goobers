@@ -12,6 +12,7 @@ import (
 
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/workitemtarget"
 )
 
 // Kind distinguishes pinned ordinary starts from legacy named triggers.
@@ -28,6 +29,7 @@ type Request struct {
 	SourceRun   string `json:"sourceRun,omitempty"`
 	Force       bool   `json:"force,omitempty"`
 	PullRequest int    `json:"pullRequest,omitempty"`
+	WorkItemID  string `json:"workItemId,omitempty"`
 	PodScoped   bool   `json:"podScoped,omitempty"`
 	PodRunID    string `json:"podRunId,omitempty"`
 }
@@ -53,6 +55,9 @@ type Envelope struct {
 
 // Validate rejects unbounded and contradictory selectors before acceptance.
 func (r Request) Validate() error {
+	if r.WorkItemID != "" && (!workitemtarget.ValidID(r.WorkItemID) || r.Gaggle == "" || r.Force || r.SourceRun != "" || r.PullRequest != 0 || r.PodScoped) {
+		return errors.Join(ErrInvalid, errors.New("startintent: incompatible exact work item selection"))
+	}
 	if !text(r.Workflow, 256, true) || !text(r.Gaggle, 256, false) || !text(r.SourceRun, 256, false) || !text(r.PodRunID, 256, false) || r.PullRequest < 0 {
 		return errors.Join(ErrInvalid, errors.New("startintent: invalid request"))
 	}
@@ -82,7 +87,7 @@ func (e Envelope) Marshal() ([]byte, error) {
 	}
 
 	if e.Source != nil {
-		if e.Request.Force || e.Request.SourceRun != "" || e.Request.PodScoped || e.Request.PullRequest != 0 {
+		if e.Request.Force || e.Request.SourceRun != "" || e.Request.PodScoped || e.Request.PullRequest != 0 || e.Request.WorkItemID != "" {
 			return nil, errors.New("startintent: incompatible signal authority")
 		}
 		if err := e.Source.Validate(); err != nil {

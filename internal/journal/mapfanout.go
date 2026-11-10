@@ -20,9 +20,13 @@ type MapRoster struct {
 	FailurePolicy      apiv1.BranchFailurePolicy `json:"failurePolicy"`
 	ItemTimeoutSeconds int32                     `json:"itemTimeoutSeconds,omitempty"`
 	MaxConcurrent      int32                     `json:"maxConcurrent"`
-	// Items is the normalized roster: identities are unique and sorted by
-	// bytewise UTF-8 order, and item i runs as branch i+1. An empty roster is
-	// recorded as an empty array, never omitted. Normative.
+	// RosterDigest is the content address of the normalized frozen roster.
+	// It is set on map.started; it remains empty inside the blob itself to
+	// avoid a circular digest.
+	RosterDigest string `json:"rosterDigest,omitempty"`
+	// Items is the normalized roster in bytewise identity order. map.started
+	// may carry descriptors only; the frozen blob supplies canonical Item
+	// bytes by RosterDigest at dispatch. An empty roster is never omitted.
 	Items []MapItem `json:"items"`
 }
 
@@ -34,8 +38,9 @@ type MapItem struct {
 	// serialization of {identity, item}. The runner always computes it; a
 	// digest the producer supplied was verified equal before freezing.
 	Digest string `json:"digest"`
-	// Item is the RFC 8785 canonical JSON object bound into the mapped task.
-	Item json.RawMessage `json:"item"`
+	// Item is the RFC 8785 canonical JSON object. It is omitted from compact
+	// map.started descriptors and present in the frozen roster blob.
+	Item json.RawMessage `json:"item,omitempty"`
 }
 
 // FanOutSourceRef is the immutable reference to a frozen fan-out source

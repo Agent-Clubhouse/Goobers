@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/creditgraph"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/handoffcheck"
@@ -197,8 +198,13 @@ type Executor struct {
 	transcriptLimit int64
 	sandboxEnforced bool
 	observer        Observer
+	windows         TranscriptWindowObserver
 	childAccess     ChildWorkflowAccessProvider
+	decisionGate    *decisiongate.Settings
 	newSandbox      func() (sandbox.Sandbox, error)
+
+	privateInputs    PrivateInputSource
+	privateRegistrar credentials.SecretRegistrar
 
 	guardedCredentialFiles bool
 }
@@ -609,12 +615,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
-	var creds *credentials.Set
-	if envEffectivePolicy != nil {
-		creds, err = e.injector.MaterializeRestricted(ctx, envEffectivePolicy.PlatformPolicy.Credentials)
-	} else {
-		creds, err = e.injector.Materialize(ctx, env.Capabilities)
-	}
+	creds, err := e.materializeCredentials(ctx, env.Capabilities, envEffectivePolicy)
 	if err != nil {
 		// A credential-materialization failure is an infrastructure fault at
 		// stage-environment build time, not evidence about the work (#3361):
@@ -630,10 +631,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			fmt.Errorf("harness: materialize credentials: %w", err),
 		))
 	}
-	contextPaths, err := e.materializeStageInputs(mode, env)
+	contextPaths, privatePaths, removePrivate, err := e.materializeStageInputs(ctx, mode, env)
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
+	defer removePrivate()
 	req := RunRequest{
 		Mode:                     mode,
 		Envelope:                 env,
@@ -651,11 +653,13 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		TelemetryDir:             telemetry.PrepareStageTelemetryDir(env.Workspace),
 		Credentials:              creds,
 		ContextPaths:             contextPaths,
+		PrivatePaths:             privatePaths,
 		Timeout:                  invocationTimeout(env, e.timeout),
 		Attempt:                  int(env.Attempt),
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
-		ChildWorkflows:           childAccess,
+		ChildWorkflows:           childAccess, Decide: e.decideAccess(env),
+		UsageSink: invoke.AgentUsageStream(ctx),
 	}
 	if nestedAdapter != nil {
 		if err := validateNestedExecution(req); err != nil {
@@ -666,8 +670,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	e.prepareReadinessRequest(&req)
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
-		// posture with no usable platform sandbox must block the stage, never
-		// downgrade to an unconfined run (S3/#166, ADR-0001).
+		// sandbox with no usable mechanism never downgrades (S3/#166, ADR-0001).
 		sb, err := e.newSandbox()
 		if err != nil {
 			return Outcome{}, nil, nil, fmt.Errorf(
@@ -703,14 +706,14 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		agentProjection = newAgentEventProjection(ctx, appender, e.scrubber)
 		req.AgentEventSink = agentProjection.Emit
 	}
-	var out Outcome
-	var runErr error
+	out, runErr := Outcome{}, error(nil)
 	capture, err := e.beginTranscriptCapture(env.TaskID, &req)
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
-	out, runErr = publication.settle(postcondition.settle(e.runAdapter(ctx, req, nestedAdapter)))
-	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
+
+	out, runErr = e.runSettledWindowed(ctx, env, req, nestedAdapter, postcondition, publication)
+	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(req, out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
 		if !hasAppender {
@@ -878,8 +881,9 @@ func (e *Executor) journalMCPServerFailures(stage string, failures []MCPServerFa
 		Type:  journal.EventRunnerAnnotation,
 		Stage: stage,
 		Runner: map[string]any{
-			"kind":    "mcp-server-unavailable",
-			"servers": servers,
+			"kind":     "mcp-server-unavailable",
+			"severity": "warning",
+			"servers":  servers,
 			"detail": "registered MCP servers were not connected at invocation; " +
 				"their tools were unavailable to the agent for this whole session — " +
 				"any missing-tool failure this stage reports is caused here",
@@ -929,17 +933,31 @@ func (e *Executor) journalBackpropClaims(env apiv1.InvocationEnvelope, telemetry
 	return nil
 }
 
+// materializeCredentials scopes the session's credentials to the admitted
+// nested-agent policy when there is one, else to the stage's capabilities.
+func (e *Executor) materializeCredentials(ctx context.Context, capabilities []string, policy *apiv1.ChildExecutionPolicy) (*credentials.Set, error) {
+	if policy != nil {
+		return e.injector.MaterializeRestricted(ctx, policy.PlatformPolicy.Credentials)
+	}
+	return e.injector.Materialize(ctx, capabilities)
+}
+
 // materializeStageInputs materializes what a stage reads before it starts:
-// its declared context and, for an agentic stage, the run's earlier claims.
-func (e *Executor) materializeStageInputs(mode Mode, env apiv1.InvocationEnvelope) (map[string]string, error) {
+// its declared context, for an agentic stage the run's earlier claims, and its
+// private inputs, which the returned func removes once the session ends.
+func (e *Executor) materializeStageInputs(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope) (map[string]string, map[string]string, func(), error) {
 	contextPaths, err := e.materializeContext(env)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if err := e.materializeRunClaims(mode, telemetry.PrepareStageTelemetryDir(env.Workspace)); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return contextPaths, nil
+	privatePaths, removePrivate, err := e.materializePrivateInputs(ctx, env)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return contextPaths, privatePaths, removePrivate, nil
 }
 
 // materializeRunClaims gives an agentic stage the claims journaled earlier in

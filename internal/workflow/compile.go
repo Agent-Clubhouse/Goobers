@@ -308,6 +308,15 @@ type compileConfig struct {
 	gaggleRequiredCapabilitiesSet       bool
 	gaggleRunsOn                        *apiv1.GaggleRunsOn
 	gaggleRunsOnSet                     bool
+	labels                              map[string]string
+}
+
+// WithLabels attaches the Workflow object's metadata.labels to the compiled
+// machine without folding them into the definition digest.
+func WithLabels(labels map[string]string) Option {
+	return func(config *compileConfig) {
+		config.labels = labels
+	}
 }
 
 // Option customizes compilation.
@@ -398,6 +407,9 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if err := validateBackpropMode(def.Spec.Backprop); err != nil {
 		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
 	}
+	if err := ValidateBackpropGroundTruth(def.Spec.Backprop); err != nil {
+		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
+	}
 	if def.Spec.Backprop != nil {
 		switch def.Spec.Backprop.Granularity {
 		case "", apiv1.BackpropGranularityRun, apiv1.BackpropGranularityStage:
@@ -431,7 +443,45 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 			return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, diagnostic.Message)
 		}
 	}
-	return interpreter.compile(def, config)
+	machine, err := interpreter.compile(def, config)
+	if err != nil {
+		return nil, err
+	}
+	if config.goobersSet {
+		machine.SetGoobers(materializeGoobersForDefinition(def, config.goobers))
+	}
+	machine.SetLabels(config.labels)
+	return machine, nil
+}
+
+// MaterializeGooberForDefinition resolves versioned goober defaults without
+// mutating the shared authoring declaration. DSL 3.1 makes omitted MCP
+// requiredness fail closed; older pins preserve nil as the legacy third state.
+func MaterializeGooberForDefinition(def Definition, spec apiv1.GooberSpec) apiv1.GooberSpec {
+	out := *spec.DeepCopy()
+	if !mcpRequiredDefaultApplies(def.DSLVersion) {
+		return out
+	}
+	for i := range out.MCPServers {
+		if out.MCPServers[i].Required == nil {
+			required := true
+			out.MCPServers[i].Required = &required
+		}
+	}
+	return out
+}
+
+func mcpRequiredDefaultApplies(version string) bool {
+	order, ok := supportmatrix.CompareDSLVersions(version, supportmatrix.V31DSLVersion)
+	return ok && order >= 0
+}
+
+func materializeGoobersForDefinition(def Definition, goobers map[string]apiv1.GooberSpec) map[string]apiv1.GooberSpec {
+	out := make(map[string]apiv1.GooberSpec, len(goobers))
+	for name, spec := range goobers {
+		out[name] = MaterializeGooberForDefinition(def, spec)
+	}
+	return out
 }
 
 // refusePreV30Surface fails a pre-3.0 compile that touches the 3.0-only
@@ -1067,6 +1117,8 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	switch version {
 	case v20.DSLVersion:
 		return &v20Interpreter, nil
+	case supportmatrix.V21DSLVersion:
+		return &v21Interpreter, nil
 	case v30.DSLVersion:
 		return &v30Interpreter, nil
 	case supportmatrix.V31DSLVersion:
@@ -1074,4 +1126,23 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	default:
 		return nil, fmt.Errorf("DSL version %q is declared %s but has no interpreter", version, support.Level)
 	}
+}
+
+// ValidateBackpropGroundTruth rejects an unknown or repeated ground-truth
+// label source.
+func ValidateBackpropGroundTruth(config *apiv1.BackpropConfig) error {
+	if config == nil || config.GroundTruth == nil {
+		return nil
+	}
+	seen := map[apiv1.BackpropLabelSource]bool{}
+	for _, source := range config.GroundTruth.Sources {
+		if source != apiv1.BackpropLabelSourceHuman {
+			return fmt.Errorf("backprop.groundTruth.sources entry %q must be %q", source, apiv1.BackpropLabelSourceHuman)
+		}
+		if seen[source] {
+			return fmt.Errorf("backprop.groundTruth.sources repeats %q", source)
+		}
+		seen[source] = true
+	}
+	return nil
 }

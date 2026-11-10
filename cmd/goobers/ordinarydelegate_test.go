@@ -17,6 +17,15 @@ import (
 )
 
 func TestOrdinaryFileTransferRecoversLostAckAndStartsOnce(t *testing.T) {
+	testOrdinaryFileTransferRecovery(t, "")
+}
+
+func TestExactWorkItemFileTransferRecoversLostAckAndStartsOnce(t *testing.T) {
+	testOrdinaryFileTransferRecovery(t, "42")
+}
+
+func testOrdinaryFileTransferRecovery(t *testing.T, workItemID string) {
+	t.Helper()
 	layout := instance.NewLayout(initDeterministicDemo(t))
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(t.Context(), layout, &wg)
@@ -44,7 +53,9 @@ func TestOrdinaryFileTransferRecoversLostAckAndStartsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	id, err := writeTriggerRequestContext(t.Context(), layout.SchedulerDir(), "example", "default-implement")
+	id, err := writeTriggerRequestPayload(layout.SchedulerDir(), triggerRequest{
+		Workflow: "default-implement", Gaggle: "example", WorkItemID: workItemID, CreatedAt: now,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +63,10 @@ func TestOrdinaryFileTransferRecoversLostAckAndStartsOnce(t *testing.T) {
 	first, err := service.queue.ByKey(t.Context(), "delegated:"+id)
 	if err != nil || first.State != triggerqueue.Accepted {
 		t.Fatal(first, err)
+	}
+	envelope, err := startintent.Parse(first.Payload)
+	if err != nil || envelope.Request.WorkItemID != workItemID || first.Actor != delegatedTriggerActor {
+		t.Fatal(envelope, first, err)
 	}
 	if withdrawn, err := withdrawTriggerRequest(layout.SchedulerDir(), id); err != nil || withdrawn {
 		t.Fatal("false withdrawal", withdrawn, err)
@@ -107,11 +122,14 @@ func TestOrdinaryFileTransferRecoversLostAckAndStartsOnce(t *testing.T) {
 	if err := startintent.VerifyIdentity(identity, first); err != nil {
 		t.Fatal(err)
 	}
+	if workItemID != "" && (identity.Trigger.Kind != journal.TriggerManual || identity.Trigger.Ref != "work-item:"+workItemID) {
+		t.Fatal("lost exact journal identity", identity)
+	}
 	events, err := reader.Events()
 	if err != nil || journal.PhaseFromEvents(events) != journal.PhaseCompleted {
 		t.Fatal(events, err)
 	}
-	if err := writeDelegateJSON(filepath.Join(dir, id+requestSuffix), triggerRequest{Workflow: "default-implement", Gaggle: "example", CreatedAt: now}); err != nil {
+	if err := writeDelegateJSON(filepath.Join(dir, id+requestSuffix), triggerRequest{Workflow: "default-implement", Gaggle: "example", WorkItemID: workItemID, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	sweep(false)
@@ -122,6 +140,16 @@ func TestOrdinaryFileTransferRecoversLostAckAndStartsOnce(t *testing.T) {
 	dirs, err := os.ReadDir(layout.ForGaggle("example").RunsDir())
 	if err != nil || len(dirs) != 1 {
 		t.Fatal("duplicate execution", len(dirs), err)
+	}
+	if workItemID != "" {
+		if err := writeDelegateJSON(filepath.Join(dir, id+requestSuffix), triggerRequest{Workflow: "default-implement", Gaggle: "example", WorkItemID: "43", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		sweep(false)
+		response, ok = readTriggerResponseFile(filepath.Join(dir, id+responseSuffix))
+		if !ok || response.Error == "" || response.RunID != "" {
+			t.Fatal("changed item reused receipt", response, ok)
+		}
 	}
 }
 
@@ -173,8 +201,8 @@ func TestDelegatedTransferPinsDeadlinesAndSelectors(t *testing.T) {
 			dir := t.TempDir()
 			service := acceptedService(t, filepath.Join(t.TempDir(), "queue.db"), newDaemonTriggerService())
 			now := time.Now().UTC()
-			service.dispatch.now = func() time.Time { return now }
-			service.ordinary = &startintent.Service{Queue: service.queue, Now: service.dispatch.now, Capture: func(context.Context, startintent.Request) (startintent.Target, func(), error) {
+			service.dispatch.SetClock(func() time.Time { return now })
+			service.ordinary = &startintent.Service{Queue: service.queue, Now: service.dispatch.Clock(), Capture: func(context.Context, startintent.Request) (startintent.Target, func(), error) {
 				return startintent.Target{Workflow: "work", Gaggle: "own", ConfigGeneration: "captured", WorkflowDigest: "workflow", GooberDigest: "goober"}, func() {}, nil
 			}}
 			req := triggerRequest{Workflow: "work", Gaggle: "own", CreatedAt: now}

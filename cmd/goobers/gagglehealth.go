@@ -501,7 +501,7 @@ func (h *daemonGaggleHealth) watchInstanceTransitions(ctx context.Context) {
 	}
 }
 
-func (h *daemonGaggleHealth) watchChanges(ctx context.Context, feed *readmodel.Feed) {
+func (h *daemonGaggleHealth) watchChanges(ctx context.Context, feed readmodel.Feed) {
 	defer h.wg.Done()
 	cursor, err := feed.Head(ctx)
 	if err != nil {

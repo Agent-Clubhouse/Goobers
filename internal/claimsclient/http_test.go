@@ -153,7 +153,7 @@ func TestHTTPErrorEnvelope(t *testing.T) {
 
 func TestHTTPErrorFallbackTruncatesRawBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
+		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("  " + strings.Repeat("x", 401) + "  "))
 	}))
 	t.Cleanup(server.Close)
@@ -163,7 +163,7 @@ func TestHTTPErrorFallbackTruncatesRawBody(t *testing.T) {
 	}
 	_, _, err = client.ClaimScoped(t.Context(), Key{Gaggle: "g", Provider: "p", ExternalID: "1"}, "run-1", "w", time.Minute)
 	var planeErr *Error
-	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
+	if !errors.As(err, &planeErr) || planeErr.Code != "http_500" || planeErr.Message != strings.Repeat("x", 400)+"…" {
 		t.Fatalf("error = %#v", planeErr)
 	}
 }
@@ -316,6 +316,56 @@ func TestHTTPMergeLockPollsRenewsAndReleases(t *testing.T) {
 	}
 	if err := client.MergeLock(context.Background(), MergeLock{Key: lock.Key}, func(context.Context) error { return nil }); err == nil {
 		t.Fatal("MergeLock without a run id was accepted")
+	}
+}
+
+func TestHTTPMergeLockWaitsForInFlightRenewBeforeRelease(t *testing.T) {
+	renewStarted := make(chan struct{})
+	finishRenew := make(chan struct{})
+	releaseStarted := make(chan struct{}, 1)
+	var signalRenewStarted sync.Once
+	_, client := newFakePlane(t, func(path string, _ map[string]any) (int, any) {
+		switch path {
+		case apicontract.ClaimAcquirePath:
+			return http.StatusOK, map[string]any{"ok": true}
+		case apicontract.ClaimRenewPath:
+			signalRenewStarted.Do(func() { close(renewStarted) })
+			<-finishRenew
+			return http.StatusOK, map[string]any{"ok": true}
+		case apicontract.ClaimReleasePath:
+			releaseStarted <- struct{}{}
+			return http.StatusOK, map[string]any{"ok": true}
+		}
+		return http.StatusNotFound, map[string]any{}
+	})
+	client.cfg.MergeLockLease = 30 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		done <- client.MergeLock(t.Context(), MergeLock{
+			Key: MergeLockKey("g", "github", "acme", "web"), RunID: "run-1", Workflow: "merge-review",
+		}, func(context.Context) error {
+			<-renewStarted
+			return nil
+		})
+	}()
+
+	releasedBeforeRenewFinished := false
+	select {
+	case <-releaseStarted:
+		releasedBeforeRenewFinished = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(finishRenew)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if releasedBeforeRenewFinished {
+		t.Fatal("merge lease release overlapped an in-flight renewal")
+	}
+	select {
+	case <-releaseStarted:
+	default:
+		t.Fatal("merge lease was not released after the renewal finished")
 	}
 }
 

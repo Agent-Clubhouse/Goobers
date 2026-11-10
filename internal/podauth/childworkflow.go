@@ -3,7 +3,6 @@ package podauth
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -76,7 +75,7 @@ func (s *SignedKey) MintChildWorkflowGrant(grant ChildWorkflowGrant, ttl time.Du
 		return "", ChildWorkflowGrant{}, err
 	}
 	payload := base64.RawURLEncoding.EncodeToString(raw)
-	return ChildWorkflowGrantPrefix + payload + "." + s.sign(childWorkflowMACDomain+payload), grant, nil
+	return s.encodeToken(ChildWorkflowGrantPrefix, childWorkflowMACDomain, payload), grant, nil
 }
 
 // RecoverChildWorkflowGrant signs trusted retained claims without changing their
@@ -92,19 +91,17 @@ func (s *SignedKey) RecoverChildWorkflowGrant(grant ChildWorkflowGrant) (string,
 		return "", err
 	}
 	payload := base64.RawURLEncoding.EncodeToString(raw)
-	return ChildWorkflowGrantPrefix + payload + "." + s.sign(childWorkflowMACDomain+payload), nil
+	return s.encodeToken(ChildWorkflowGrantPrefix, childWorkflowMACDomain, payload), nil
 }
 
 // VerifyChildWorkflowGrant authenticates bounded, closed claims. It does not
 // check the live occurrence lease, cancellation fence or current authorization.
 func (s *SignedKey) VerifyChildWorkflowGrant(token string) (ChildWorkflowGrant, error) {
-	rest, ok := strings.CutPrefix(token, ChildWorkflowGrantPrefix)
-	if !ok || len(token) > maxChildWorkflowGrantBytes {
+	if len(token) > maxChildWorkflowGrantBytes {
 		return ChildWorkflowGrant{}, ErrInvalidChildWorkflowGrant
 	}
-	payload, mac, ok := strings.Cut(rest, ".")
-	if !ok || payload == "" || mac == "" || strings.Contains(mac, ".") ||
-		subtle.ConstantTimeCompare([]byte(mac), []byte(s.sign(childWorkflowMACDomain+payload))) != 1 {
+	payload, err := s.verifyMAC(token, ChildWorkflowGrantPrefix, childWorkflowMACDomain)
+	if err != nil {
 		return ChildWorkflowGrant{}, ErrInvalidChildWorkflowGrant
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(payload)

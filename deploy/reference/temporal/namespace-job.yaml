@@ -18,24 +18,27 @@ kind: Job
 metadata:
   name: goobers-temporal-namespace
   namespace: goobers-temporal
+  labels:
+    app.kubernetes.io/name: temporal
+    app.kubernetes.io/component: namespace-registrar
 spec:
   # Reruns (chart upgrade, cluster rebuild) must not fail on an
   # already-registered namespace; backoffLimit bounds a genuine failure
   # (frontend unreachable) rather than retrying forever.
   backoffLimit: 6
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: temporal
+        app.kubernetes.io/component: namespace-registrar
     spec:
       restartPolicy: Never
       nodeSelector:
         kubernetes.io/os: linux
       containers:
         - name: register-namespace
-          # CHANGE-ME: pin to the admin-tools image matching the Temporal
-          # server version this chart deploys (values.yaml header — chart
-          # 0.62.0 at time of writing). The chart's own admintools: pod (also
-          # configured in values.yaml) already carries a compatible tctl; this
-          # image tag should track it.
-          image: temporalio/admin-tools:1.25.1
+          # Keep this at the server version selected by values.yaml.
+          image: temporalio/admin-tools:1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87
           env:
             # Same default the worker/engine connect to
             # (internal/instance/config.go: DefaultTemporalNamespace) unless
@@ -56,11 +59,12 @@ spec:
           args:
             - |
               set -eu
-              if tctl --address "$TEMPORAL_ADDRESS" --namespace "$TEMPORAL_NAMESPACE" namespace describe >/dev/null 2>&1; then
+              if temporal --address "$TEMPORAL_ADDRESS" operator namespace describe --namespace "$TEMPORAL_NAMESPACE" >/dev/null 2>&1; then
                 echo "namespace $TEMPORAL_NAMESPACE already registered"
                 exit 0
               fi
-              tctl --address "$TEMPORAL_ADDRESS" --namespace "$TEMPORAL_NAMESPACE" namespace register --retention "$RETENTION"
+              temporal --address "$TEMPORAL_ADDRESS" operator namespace create \
+                --namespace "$TEMPORAL_NAMESPACE" --retention "$RETENTION"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

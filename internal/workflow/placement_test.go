@@ -87,11 +87,12 @@ func TestStagePlacementsV30(t *testing.T) {
 			Capabilities: []string{"go@1.26", "run:shell"},
 		},
 		{
-			Stage:        "review",
-			CPU:          "1000m",
-			Memory:       "2Gi",
-			Capabilities: []string{"go@1.26", "harness:copilot"},
-			Restrictions: []string{"network:allowlist"},
+			Stage:                   "review",
+			RequireResourceMinimums: true,
+			CPU:                     "1000m",
+			Memory:                  "2Gi",
+			Capabilities:            []string{"go@1.26", "harness:copilot"},
+			Restrictions:            []string{"network:allowlist"},
 		},
 	}
 	if !reflect.DeepEqual(requirements, want) {

@@ -33,7 +33,11 @@ const updateBehindPRHelp = "Usage: goobers update-behind-pr [path]\n\n" +
 	"it is updated the same way. Other candidates are routed to full\n" +
 	"remediation, including a PR carrying goobers:needs-remediation that has\n" +
 	"human feedback no Goobers response has answered: this lane clears that\n" +
-	"label, and the feedback needs the agentic path. Comments are classified\n" +
+	"label, and the feedback needs the agentic path. So is a PR whose head\n" +
+	"carries a finding an earlier review raised and no later review resolved\n" +
+	"or rejected, even under a later pass: a current branch does not heal\n" +
+	"it (#5890). A verdict ledger that cannot be read fails the stage.\n" +
+	"Comments are classified\n" +
 	"as pr-comment-watch classifies them, under the same identityMode\n" +
 	"(dedicated or shared; default dedicated) and excludeAuthors inputs; set\n" +
 	"them to pr-comment-watch's values. A run dispatched for one\n" +
@@ -217,15 +221,30 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 // routed the PR for; the full path applies the declared remediate policy to it
 // instead. Comments are classified exactly as pr-comment-watch and rebase-pr
 // classify them, under the same identityMode and excludeAuthors inputs.
-func updateBehindNeedsAgent(root string, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment, login string, minSeverity apiv1.Severity, identity commentIdentitySettings) bool {
-	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(root, repo, pr.Number, comments, login), pr.Number, minSeverity) {
-		return true
+//
+// The verdict read is authoritative over every verdict on its head and base
+// (#5890): a current branch is not mechanically healed while a finding an
+// earlier review raised there stands unanswered, even under a later generic
+// pass. Such a block is journaled as a merge-safety event.
+//
+// A ledger that cannot be read is an error: the lane must not clear the label
+// on a verdict it could not establish.
+func updateBehindNeedsAgent(root string, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment, login string, minSeverity apiv1.Severity, identity commentIdentitySettings) (bool, error) {
+	verdict, standing, err := gatherPRVerdictChecked(root, repo, pr.Number, comments, login)
+	if err != nil {
+		return true, err
+	}
+	if verdictHasSubstantiveFindingForPR(verdict, pr.Number, minSeverity) {
+		if len(standing) > 0 {
+			recordMergeSafetyBlock(root, "update-behind-pr", "route-full-remediation", pr.Number, pr.HeadSHA, pr.BaseSHA, standing)
+		}
+		return true, nil
 	}
 	if !hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
-		return false
+		return false, nil
 	}
 	_, unanswered, _ := latestUnaddressedHumanComment(comments, newCommentClassifier(loginCommentIdentity(login), identity))
-	return unanswered
+	return unanswered, nil
 }
 
 func updateBehindActionForPR(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity, identity commentIdentitySettings) (updateBehindAction, error) {
@@ -262,8 +281,8 @@ func updateBehindActionForPR(ctx context.Context, root string, provider remediat
 	if err != nil {
 		return updateBehindRouteFull, err
 	}
-	if updateBehindNeedsAgent(root, repo, pr, comments, verdictAuthor, minSeverity, identity) {
-		return updateBehindRouteFull, nil
+	if needsAgent, err := updateBehindNeedsAgent(root, repo, pr, comments, verdictAuthor, minSeverity, identity); needsAgent || err != nil {
+		return updateBehindRouteFull, err
 	}
 	if behind {
 		return updateBehindViaAPI, nil
@@ -381,34 +400,6 @@ func baseFailuresExplain(ctx context.Context, provider remediationProvider, repo
 		}
 	}
 	return false, nil
-}
-func pullRequestBehindLiveBase(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (bool, error) {
-	mergeBase, baseTip, err := pullRequestLiveBaseMergeBase(ctx, provider, repo, pr, baseTips)
-	if err != nil {
-		return false, err
-	}
-	return mergeBase != baseTip, nil
-}
-
-// pullRequestLiveBaseMergeBase resolves pr's merge-base with the live tip of
-// its base branch, caching the tip per base in baseTips.
-func pullRequestLiveBaseMergeBase(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (mergeBase, baseTip string, err error) {
-	baseTip = baseTips[pr.Base]
-	if baseTip == "" {
-		baseTip, err = provider.BranchTipSHA(ctx, repo, pr.Base)
-		if err != nil {
-			return "", "", fmt.Errorf("resolve live base branch %q: %w", pr.Base, err)
-		}
-		baseTips[pr.Base] = baseTip
-	}
-	compared, err := provider.CompareCommits(ctx, repo, baseTip, pr.HeadSHA)
-	if err != nil {
-		return "", "", fmt.Errorf("compare live base with PR #%d head: %w", pr.Number, err)
-	}
-	if compared.MergeBaseSHA == "" {
-		return "", "", fmt.Errorf("compare live base with PR #%d head returned no merge base", pr.Number)
-	}
-	return compared.MergeBaseSHA, baseTip, nil
 }
 
 // writeUpdateBehindNotApplicable reports update-behind-pr as not applicable

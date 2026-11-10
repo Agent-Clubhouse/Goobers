@@ -23,7 +23,7 @@ func (f *fakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWo
 	f.calls++
 	f.lastReq = req
 	if f.err == nil || f.commitOnError {
-		f.comments = append(f.comments, providers.Comment{Body: req.Comment})
+		f.comments = append(f.comments, providers.Comment{Body: req.Comment, Author: "report-bot", AuthorID: "report-bot-id"})
 	}
 	if f.err != nil {
 		return providers.WorkItem{}, f.err
@@ -32,7 +32,13 @@ func (f *fakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWo
 }
 
 func (f *fakeCommenter) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
-	return append([]providers.Comment(nil), f.comments...), nil
+	comments := append([]providers.Comment(nil), f.comments...)
+	for i := range comments {
+		if comments[i].AuthorID == "" {
+			comments[i].AuthorID = "report-bot-id"
+		}
+	}
+	return comments, nil
 }
 
 func (f *fakeCommenter) UpdateComment(_ context.Context, _ providers.RepositoryRef, commentID, body string) error {
@@ -366,4 +372,8 @@ func TestParseFailureStreakCount(t *testing.T) {
 			t.Fatalf("ParseFailureStreakCount(%q) = %d, true; want false", body, got)
 		}
 	}
+}
+
+func (f *fakeCommenter) AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error) {
+	return providers.ADOIdentity{ID: "report-bot-id"}, nil
 }

@@ -236,7 +236,7 @@ func ParseFailureStreakCount(body string) (int, bool) {
 // current labels do not show yet.
 func UpsertFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, count int, stage, runID, runURL string, applying []string) error {
 	body := failureStreakBody(count, stage, runID, runURL, resolveFailurePark(ctx, poster, repository, itemID, applying))
-	if err := upsertMarkerComment(ctx, poster, repository, itemID, failureStreakMarker, body, true); err != nil {
+	if err := upsertMarkerComment(ctx, poster, repository, itemID, failureStreakMarker, body, true, failureIntentMarker(repository, itemID, "work", runID, stage, count, false)); err != nil {
 		return fmt.Errorf("failure streak comment: %w", err)
 	}
 	return nil
@@ -250,7 +250,7 @@ func ResetFailureComment(ctx context.Context, poster Commenter, repository provi
 			"<!-- goobers:failure-streak data-count=\"0\" -->",
 		runID, runURL,
 	)
-	if err := upsertMarkerComment(ctx, poster, repository, itemID, failureStreakMarker, body, false); err != nil {
+	if err := upsertMarkerComment(ctx, poster, repository, itemID, failureStreakMarker, body, false, failureIntentMarker(repository, itemID, "work", runID, "", 0, true)); err != nil {
 		return fmt.Errorf("failure streak reset: %w", err)
 	}
 	return nil
@@ -285,7 +285,7 @@ func infraFailureStreakBody(count, threshold int, stage, latestRunID, latestRunU
 // streak and parks at its own, higher threshold.
 func UpsertInfraFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, count, threshold int, stage, runID, runURL string, applying []string) error {
 	body := infraFailureStreakBody(count, threshold, stage, runID, runURL, resolveFailurePark(ctx, poster, repository, itemID, applying))
-	if err := upsertMarkerComment(ctx, poster, repository, itemID, infraFailureStreakMarker, body, true); err != nil {
+	if err := upsertMarkerComment(ctx, poster, repository, itemID, infraFailureStreakMarker, body, true, failureIntentMarker(repository, itemID, "infra", runID, stage, count, false)); err != nil {
 		return fmt.Errorf("infrastructure failure streak comment: %w", err)
 	}
 	return nil
@@ -299,7 +299,7 @@ func ResetInfraFailureComment(ctx context.Context, poster Commenter, repository 
 			"<!-- goobers:infra-failure-streak data-count=\"0\" -->",
 		runID, runURL,
 	)
-	if err := upsertMarkerComment(ctx, poster, repository, itemID, infraFailureStreakMarker, body, false); err != nil {
+	if err := upsertMarkerComment(ctx, poster, repository, itemID, infraFailureStreakMarker, body, false, failureIntentMarker(repository, itemID, "infra", runID, "", 0, true)); err != nil {
 		return fmt.Errorf("infrastructure failure streak reset: %w", err)
 	}
 	return nil
@@ -309,17 +309,31 @@ func ResetInfraFailureComment(ctx context.Context, poster Commenter, repository 
 // it cannot be edited (ADO cannot edit work-item comments) a new marker
 // comment keeps the latest state durable. Without an existing marker, a new
 // comment is posted only when create is set: a reset never creates one.
-func upsertMarkerComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, marker, body string, create bool) error {
+func upsertMarkerComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, marker, body string, create bool, intent string) error {
+	var err error
+	body, err = freezeFailureReportBody(ctx, body+"\n"+intent)
+	if err != nil {
+		return err
+	}
 	comments, err := poster.ListComments(ctx, repository, itemID)
 	if err != nil {
 		return fmt.Errorf("list comments: %w", err)
+	}
+	comments, err = ownMarkedComments(ctx, poster, repository, comments, marker)
+	if err != nil {
+		return err
+	}
+	if exists, err := reconcileReportDuplicates(ctx, poster, repository, comments, intent); exists || err != nil {
+		return err
 	}
 	found := false
 	for _, c := range comments {
 		if strings.Contains(c.Body, marker) {
 			found = true
 			if err := poster.UpdateComment(ctx, repository, c.ID, body); err == nil {
-				return nil
+				return reconcilePublishedReport(ctx, poster, repository, itemID, marker, intent)
+			} else if _, limited := providers.AsRateLimitError(err); limited {
+				return fmt.Errorf("update comment: %w", err)
 			}
 			break
 		}
@@ -334,5 +348,5 @@ func upsertMarkerComment(ctx context.Context, poster Commenter, repository provi
 	}); err != nil {
 		return fmt.Errorf("post comment: %w", err)
 	}
-	return nil
+	return reconcilePublishedReport(ctx, poster, repository, itemID, marker, intent)
 }

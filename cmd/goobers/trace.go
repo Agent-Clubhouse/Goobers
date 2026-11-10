@@ -552,6 +552,7 @@ func loadTraceAttribution(layout instance.Layout, runID string) traceBackprop {
 func printTraceAttributionSummary(stdout io.Writer, backprop traceBackprop) {
 	if attribution := backprop.record; attribution != nil {
 		pf(stdout, "backprop: %s (%s)\n", attribution.Status, attribution.ContractVersion)
+		printTraceVerifications(stdout, attribution.Attribution)
 	}
 	if backprop.stages != nil {
 		pf(stdout, "backprop stages: %d checkpoint(s)\n", len(backprop.stages.Records))
@@ -561,6 +562,22 @@ func printTraceAttributionSummary(stdout io.Writer, backprop traceBackprop) {
 	}
 	if backprop.stagesError != "" {
 		pf(stdout, "backprop stages: unverified (%s)\n", backprop.stagesError)
+	}
+}
+
+func printTraceVerifications(stdout io.Writer, attribution creditgraph.Attribution) {
+	if len(attribution.Verifications)+len(attribution.UnverifiedVerifications)+attribution.DroppedVerifications == 0 {
+		return
+	}
+	pf(stdout, "backprop verification: %d recorded, %d unverified, %d dropped (scoped checker evidence, not causal blame)\n",
+		len(attribution.Verifications), len(attribution.UnverifiedVerifications), attribution.DroppedVerifications)
+	for _, record := range attribution.Verifications {
+		pf(stdout, "  %s %s: %s (subject %s)\n", record.ID, record.Property, record.Outcome, record.Subject)
+		if record.RepairVerified {
+			pf(stdout, "    scoped repair of %s\n", record.Repairs)
+		} else if record.Repairs != "" {
+			pf(stdout, "    repair unverified: %s\n", record.RepairReason)
+		}
 	}
 }
 
@@ -608,6 +625,16 @@ func printRunLineage(stdout io.Writer, lineage *readservice.RunLineage) {
 			}
 			pf(stdout, "inputs:   %s\n", strings.Join(names, ", "))
 		}
+	}
+
+	if lineage.HistoricalRepassCountPartial {
+		pf(stdout, "history: partial (ancestor depth limit, cycle, or unavailable source)\n")
+	}
+	if lineage.ContinuationsIncomplete {
+		pf(stdout, "continuations: incomplete (lineage index unavailable or awaiting journal ingestion)\n")
+	}
+	if lineage.ContinuationsTruncated {
+		pf(stdout, "continuations: first page only; next cursor=%s\n", lineage.ContinuationsNextCursor)
 	}
 	if len(lineage.Continuations) > 0 {
 		continuations := make([]string, len(lineage.Continuations))

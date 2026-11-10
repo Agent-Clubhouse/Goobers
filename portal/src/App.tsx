@@ -16,6 +16,7 @@ import {
   useConfigurationWarnings,
 } from "./configurationWarnings";
 import { LiveDataProvider, type LiveDataConfig } from "./liveData";
+import { FluidUIProvider, fluidUIClientActions } from "./fluidUI";
 import {
   createPortalDiagnostics,
   type PortalDiagnostics,
@@ -26,6 +27,7 @@ import { GagglePage } from "./pages/GagglePage";
 import { GettingStartedPage } from "./pages/GettingStartedPage";
 import { GoobersPage } from "./pages/GoobersPage";
 import { CostPage } from "./pages/CostPage";
+import { LabsPage } from "./pages/LabsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { InstanceDetailPage } from "./pages/InstanceDetailPage";
@@ -326,12 +328,12 @@ function Portal({
     }
   }, [config, loading, theme]);
 
-  // approve/override/rerun (HITL-7/#469): registered now so the UI surface
+  // approve/override/rerun/retry (HITL-7/#469): registered now so the UI surface
   // participates in the CLI/API/UI runtime-mutation parity check alongside
   // the daemon's stub routes, but each handler is itself a stub — no
   // intervention UI exists yet, and the underlying gate-resolution/rerun
   // wiring is #466/#468's scope, not this seam's.
-  const { navigate, revealRun } = bindUIActions({
+  const { navigate, revealRun, applyFluidUI, undoFluidUI, resetFluidUI } = bindUIActions({
     navigate: (nextRoute: Route, options?: NavigateOptions) => {
       const nextHash = routeHash(nextRoute);
       if (window.location.hash === nextHash) {
@@ -354,7 +356,12 @@ function Portal({
     rerun: () => {
       console.warn("goobers: rerun is not implemented yet (HITL-7/#469)");
     },
+    retry: () => {
+      console.warn("goobers: retry is not implemented yet (#8269)");
+    },
     revealRun: (runId: string) => client.revealRun(runId),
+    // Labs Fluid UI (#8416): per-user presentation writes, never runtime state.
+    ...fluidUIClientActions(client),
   });
 
   // Shared identity and time window carried by the Runs / Insight / Cost
@@ -396,116 +403,121 @@ function Portal({
 
   return (
     <CobrandContext.Provider value={{ config, loading }}>
-      <PortalShell
-        activeArea={activeArea(route)}
-        activeGaggle={activeRouteGaggle(route)}
-        client={client}
-        currentScope={currentScope}
-        hostContext={mode === "fleet" ? "fleet" : standalone ? "standalone" : "daemon"}
-        headerHost={headerHost}
-        navigate={navigate}
-        standalone={standalone}
-        theme={theme}
-        toggleTheme={toggleTheme}
-      >
-        <RouteErrorBoundary key={routeErrorBoundaryKey(route)}>
-          {route.page === "overview" && (
-            <OverviewPage
-              client={client}
-              configurationWarnings={configurationWarnings}
-              standalone={standalone}
-            />
-          )}
-          {route.page === "instance-detail" && (
-            <InstanceDetailPage
-              client={client}
-              configurationWarnings={configurationWarnings}
-              detail={route.detail}
-              navigate={navigate}
-              standalone={standalone}
-            />
-          )}
-          {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
-          {route.page === "goobers" && (
-            <GoobersPage
-              client={client}
-              gaggleName={route.gaggle}
-              standalone={standalone}
-            />
-          )}
-          {route.page === "gaggle" && (
-            <GagglePage
-              client={client}
-              gaggleName={route.id}
-              navigate={navigate}
-              standalone={standalone}
-            />
-          )}
-          {route.page === "runs" && (
-            <RunsPage
-              client={client}
-              filters={route.filters}
-              navigate={navigate}
-              standalone={standalone}
-            />
-          )}
-          {route.page === "work-items" && (
-            <WorkItemsPage client={client} navigate={navigate} route={route} standalone={standalone} />
-          )}
-          {route.page === "insight" && (
-            <InsightPage
-              client={client}
-              filters={route.filters}
-              navigate={navigate}
-              standalone={standalone}
-            />
-          )}
-          {route.page === "cost" && (
-            <CostPage
-              client={client}
-              filters={route.filters}
-              navigate={navigate}
-              standalone={standalone}
-            />
-          )}
-          {route.page === "errors" && (
-            <ErrorsPage
-              client={client}
-              filters={route.filters}
-              key={routeHash(route)}
-              standalone={standalone}
-            />
-          )}
-          {route.page === "workflow" && route.gaggle && (
-            <WorkflowPage
-              client={client}
-              configurationWarnings={configurationWarnings}
-              gaggle={route.gaggle}
-              key={`${route.gaggle}/${route.id}`}
-              navigate={navigate}
-              standalone={standalone}
-              workflowName={route.id}
-            />
-          )}
-          {route.page === "run" && (
-            <RunPage
-              client={client}
-              eventDetail={route.event}
-              key={route.id}
-              navigate={navigate}
-              nodeId={route.node}
-              revealRun={revealRun}
-              runId={route.id}
-              sequence={route.seq}
-              standalone={standalone}
-              tab={route.tab}
-            />
-          )}
-          {route.page === "workflow" && !route.gaggle && (
-            <p role="alert">Workflow routes require both a gaggle and workflow name.</p>
-          )}
-        </RouteErrorBoundary>
-      </PortalShell>
+      <FluidUIProvider actions={{ applyFluidUI, undoFluidUI, resetFluidUI }} client={client}>
+        <PortalShell
+          activeArea={activeArea(route)}
+          activeGaggle={activeRouteGaggle(route)}
+          client={client}
+          currentScope={currentScope}
+          hostContext={mode === "fleet" ? "fleet" : standalone ? "standalone" : "daemon"}
+          headerHost={headerHost}
+          navigate={navigate}
+          standalone={standalone}
+          theme={theme}
+          toggleTheme={toggleTheme}
+        >
+          <RouteErrorBoundary key={routeErrorBoundaryKey(route)}>
+            {route.page === "overview" && (
+              <OverviewPage
+                client={client}
+                configurationWarnings={configurationWarnings}
+                standalone={standalone}
+              />
+            )}
+            {route.page === "instance-detail" && (
+              <InstanceDetailPage
+                client={client}
+                configurationWarnings={configurationWarnings}
+                detail={route.detail}
+                navigate={navigate}
+                standalone={standalone}
+              />
+            )}
+            {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+            {route.page === "goobers" && (
+              <GoobersPage
+                client={client}
+                gaggleName={route.gaggle}
+                standalone={standalone}
+              />
+            )}
+            {route.page === "gaggle" && (
+              <GagglePage
+                client={client}
+                gaggleName={route.id}
+                navigate={navigate}
+                standalone={standalone}
+              />
+            )}
+            {route.page === "runs" && (
+              <RunsPage
+                client={client}
+                filters={route.filters}
+                navigate={navigate}
+                standalone={standalone}
+              />
+            )}
+            {route.page === "work-items" && (
+              <WorkItemsPage client={client} navigate={navigate} route={route} standalone={standalone} />
+            )}
+            {route.page === "insight" && (
+              <InsightPage
+                client={client}
+                filters={route.filters}
+                navigate={navigate}
+                standalone={standalone}
+              />
+            )}
+            {route.page === "cost" && (
+              <CostPage
+                client={client}
+                filters={route.filters}
+                navigate={navigate}
+                standalone={standalone}
+              />
+            )}
+            {route.page === "labs" && (
+              <LabsPage client={client} feature={route.feature} fleet={mode === "fleet"} />
+            )}
+            {route.page === "errors" && (
+              <ErrorsPage
+                client={client}
+                filters={route.filters}
+                key={routeHash(route)}
+                standalone={standalone}
+              />
+            )}
+            {route.page === "workflow" && route.gaggle && (
+              <WorkflowPage
+                client={client}
+                configurationWarnings={configurationWarnings}
+                gaggle={route.gaggle}
+                key={`${route.gaggle}/${route.id}`}
+                navigate={navigate}
+                standalone={standalone}
+                workflowName={route.id}
+              />
+            )}
+            {route.page === "run" && (
+              <RunPage
+                client={client}
+                eventDetail={route.event}
+                key={route.id}
+                navigate={navigate}
+                nodeId={route.node}
+                revealRun={revealRun}
+                runId={route.id}
+                sequence={route.seq}
+                standalone={standalone}
+                tab={route.tab}
+              />
+            )}
+            {route.page === "workflow" && !route.gaggle && (
+              <p role="alert">Workflow routes require both a gaggle and workflow name.</p>
+            )}
+          </RouteErrorBoundary>
+        </PortalShell>
+      </FluidUIProvider>
     </CobrandContext.Provider>
   );
 }

@@ -24,16 +24,25 @@ const MaxGenerations = 64
 // MaxStoredBytes bounds archives, their shared-store copy, and extracted trees.
 const MaxStoredBytes = int64(256 << 20)
 
+// ErrCapacity means admitting a new generation would exceed a finite retention bound.
+var ErrCapacity = errors.New("config generation retention capacity exhausted by protected runs")
+
 // Store retains extracted immutable generations and publishes their archives
 // through the existing content-addressed stage transport. Workers use a local
 // cache; shared leases protect concurrent readers from catalogue pruning.
 type Store struct {
 	Root  string
-	Blobs *blobstore.Dir
+	Blobs BlobStore
 	// LocalCache retains fetched archives without publishing or deleting shared blobs.
 	LocalCache bool
 	// DurablePins is re-read only after exclusive ownership excludes live readers.
 	DurablePins func(context.Context) (map[string]bool, error)
+}
+
+// BlobStore is the shared content store capability needed by generations.
+type BlobStore interface {
+	blobstore.Store
+	Remove(context.Context, string) error
 }
 
 // Keep captures a generation before run admission. Protected includes all
@@ -237,7 +246,7 @@ func (s Store) prune(ctx context.Context, protected map[string]bool, needed int6
 		total -= c.size
 	}
 	if count >= MaxGenerations || total+needed > MaxStoredBytes {
-		return errors.New("config generation retention capacity exhausted by protected runs")
+		return ErrCapacity
 	}
 	return nil
 }

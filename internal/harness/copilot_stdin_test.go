@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,11 +51,7 @@ func TestCopilotAdapterSendsPromptsOnStdinNotArgv(t *testing.T) {
 			if !ok || !strings.Contains(repair, "ended without writing the mandatory completion file") {
 				t.Fatalf("repair stdin = %q (flag %v), want the completion-repair prompt", repair, ok)
 			}
-			// The repair turn reuses the same argv, so it continues the same
-			// --session-id rather than starting a fresh session.
-			if !slices.Equal(calls[0].Command, calls[1].Command) || commandOptionValue(calls[1].Command, "--session-id") == "" {
-				t.Fatalf("repair argv %v differs from initial %v or lacks the session id", calls[1].Command, calls[0].Command)
-			}
+			assertCopilotRepairSessionArguments(t, calls[0].Command, calls[1].Command)
 			for _, call := range calls {
 				assertArgvCarriesNoPrompt(t, call.Command, string(call.Stdin))
 			}

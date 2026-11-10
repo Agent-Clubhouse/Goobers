@@ -24,6 +24,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
@@ -1698,5 +1699,61 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	}
 	if stderr.String() != "dashboard: mode=standalone\n" {
 		t.Fatalf("dashboard mode output = %q, want standalone mode", stderr.String())
+	}
+}
+
+// TestStandaloneDashboardAPIServesLabsWorkflowClusters guards that the
+// standalone dashboard wires the same Labs cluster read as `goobers up`
+// instead of answering 503 labs_unavailable (#8309).
+func TestStandaloneDashboardAPIServesLabsWorkflowClusters(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = api.close() }()
+	response := httptest.NewRecorder()
+	api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.LabsWorkflowClustersPath, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+}
+
+// TestStandaloneDashboardAPIDegradesLabsWorkflowFeaturesOnFleetStorageFailure
+// guards #8375: an unreadable fleet store leaves only the optional Labs
+// workflow-feature route unavailable (503) instead of aborting startup.
+func TestStandaloneDashboardAPIDegradesLabsWorkflowFeaturesOnFleetStorageFailure(t *testing.T) {
+	originalStorage := newFleetStorage
+	newFleetStorage = func() (fleet.Storage, error) { return nil, errors.New("fleet store unreadable") }
+	t.Cleanup(func() { newFleetStorage = originalStorage })
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	api, err := standaloneDashboardAPI(layout, config, log.New(&logs, "", 0), true)
+	if err != nil {
+		t.Fatalf("startup failed on fleet storage error: %v", err)
+	}
+	defer func() { _ = api.close() }()
+	response := httptest.NewRecorder()
+	api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.LabsWorkflowFeaturesPath+"?features=structural", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"labs_unavailable"`) {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if !strings.Contains(logs.String(), "warning: Labs workflow features unavailable: fleet store unreadable") {
+		t.Fatalf("warning log = %q", logs.String())
+	}
+	clusters := httptest.NewRecorder()
+	api.handler.ServeHTTP(clusters, httptest.NewRequest(http.MethodGet, apicontract.LabsWorkflowClustersPath, nil))
+	if clusters.Code != http.StatusOK {
+		t.Fatalf("clusters status = %d, body = %q", clusters.Code, clusters.Body.String())
 	}
 }

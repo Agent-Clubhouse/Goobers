@@ -47,10 +47,11 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.spec.parallels.selection.source.task": "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
 
 	// DSL 3.1-only policy; the version router rejects it for this interpreter.
-	"workflow.spec.tasks.childWorkflows.allowedGoobers":      "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
-	"workflow.spec.tasks.childWorkflows.allowedCapabilities": "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
-	"workflow.spec.tasks.childWorkflows.maxChildren":         "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
-	"workflow.spec.tasks.childWorkflows.allowPRPublication":  "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedGoobers":                           "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedCapabilities":                      "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.maxChildren":                              "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowPRPublication":                       "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.requireHumanApprovalForOutOfDistribution": "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
 
 	// Publication policy belongs to the binary, not this frozen interpreter.
 	// The public registry and TestCostPublicationFeatureIsIndependentOfWorkflowPin
@@ -62,7 +63,11 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.spec.backprop.enabled":                       "binary-layer terminal analysis policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.granularity":                   "binary-layer terminal analysis cadence (#7118); registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.mode":                          "binary-layer terminal analysis mode; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"gaggle.spec.backprop.mode":                            "binary-layer gaggle Backprop shadow override; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.backprop.granularity":                     "binary-layer gaggle Backprop default granularity (#7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.backprop.groundTruth.sources":           "binary-layer ground-truth label sources (#7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.backprop.groundTruth.sources":             "binary-layer gaggle Backprop default ground-truth label sources (#7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.backprop.mode":                            "binary-layer gaggle Backprop default mode (#7117, #7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.backprop.version":                         "binary-layer gaggle Backprop default contract (#7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.version":                       "binary-layer terminal analysis contract; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	// Gaggle-health policy is one binary-layer feature (gaggle.spec.health);
 	// its leaves are payload, not separately versioned DSL capabilities.
@@ -103,6 +108,8 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.metadata.labels":      "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.metadata.name":        "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.dslVersion":           "identity envelope: selects the interpreting DSL version; versions are the support matrix's surface, not a feature of it",
+
+	"goober.spec.mcpServers.required": "DSL 3.1-only surface; registered centrally as goober.spec.mcpServers.required and refused by the 2.0 interpreter",
 
 	// DSL 3.0-only surface (dsl-3.0.md §2/§4, issue #3505): the schemas are
 	// shared across interpreters, so these leaves are parseable here, but the

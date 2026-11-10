@@ -163,6 +163,18 @@ func runDetachedWorkerContext(ctx context.Context, args []string, stdout, stderr
 	target.PR = pr
 	target.Force = force
 	target.RequestID = requestID
+	if marker := strings.LastIndex(target.Workflow, "#work-item-"); marker >= 0 {
+		target.WorkItemID = target.Workflow[marker+11:]
+		target.Workflow = target.Workflow[:marker]
+		if target.WorkItemID == "" {
+			pf(stderr, "error: invalid exact work item in detached run worker\n")
+			return 2
+		}
+		if err := target.startRequest().Validate(); err != nil {
+			pf(stderr, "error: invalid exact work item in detached run worker: %v\n", err)
+			return 2
+		}
+	}
 	l := instance.NewLayout(root)
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())

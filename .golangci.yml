@@ -8,6 +8,14 @@ run:
   # Keep at least 3x the median of the reviewed cross-platform CI samples in
   # test/ci/lint-timing-samples.json; TestLintTimeoutHasMeasuredMargin guards it.
   timeout: 15m
+  # Lint the integration-tagged test files too: they are real code CI compiles
+  # and runs elsewhere, but untagged lint skipped them and let findings
+  # accumulate. The live* tags stay on the preflight vet (test/ci uncoveredBuildTags).
+  build-tags:
+    - integration
+    - cloudintegration
+    - cloudpg
+    - rollbackcompat
 
 linters:
   enable:

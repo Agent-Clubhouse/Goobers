@@ -147,3 +147,128 @@ The credential needs permission to contribute PR statuses. See
 - [GitHub token scopes](github-token-scopes.md) for the `github:pr:review` grant.
 - `goobers apply-verdict --help` and `goobers merge-pr --help` for the stage
   contracts.
+
+## Finding publication and landing custody
+
+An unresolved same-head finding remains authoritative until a disposition
+addresses that finding instance. A voided review retains its original pinned
+payload, including before migration from legacy comments. Marking review
+permission stale does not erase that evidence.
+
+Authoritative verdict commits (including advisory and Azure DevOps paths),
+legacy-state migration, and merge-pr's final ledger read through landing share
+a short durable publication claim. Local and claims-plane stages use the same
+claim record. The older, longer poll-through-merge lock remains in place;
+publication can finish during a pre-merge check or policy lookup, and the final
+ledger read then refuses the newly recorded finding.
+
+The publication claim waits at most two minutes. Its action, including the
+provider landing request, has a one-minute deadline inside a five-minute lease.
+Ownership is checked again after the action. A timeout or unverifiable custody
+fails visibly with an uncertain-outcome error and retains the claim until lease
+expiry, including against retries in the same run; it does not report a
+successful guarded landing. Operators should
+inspect the actual provider result before retrying an uncertain landing.
+
+This contract requires one owning gaggle and sequential participating stages
+within each run: claims are owned by run, not individual stage. Legacy binaries,
+manual state writers, and another installation do not participate. Forge APIs
+do not accept a publication fencing token, so an already accepted HTTP request
+that completes remotely after cancellation cannot be rolled back by this
+protocol. The bounded request, retained lease and visible uncertainty contain
+that failure; they cannot make a provider transaction atomic with local state.
+
+Publication custody uses the reserved `publication-lock/` claim namespace.
+Generic run completion, terminal recovery, live-run renewal and continuation
+reclaim do not release, extend or transfer it. An explicit verified release
+ends a completed action's custody; otherwise its fixed expiry is the backstop,
+even if the workflow remains live or has already become terminal.
+
+An unconfirmed landing error (including a lost transport reply after provider
+acceptance) also retains that fixed lease. One bounded PR read can release it
+if the selected head is confirmed merged; an open or unreadable PR cannot prove
+that the provider rejected the request. Explicit provider refusals such as
+HTTP 405/409 release normally. Existing merge-result and error reporting stays
+unchanged.
+
+Generic force-release and bulk cleanup cannot remove publication custody. After
+checking the actual provider outcome, an operator with local instance access can
+explicitly override **one exact key**:
+
+```sh
+goobers claims release --force \
+  --publication-custody-reason="Verified the provider outcome; safe to release" \
+  --gaggle=review --provider=github \
+  publication-lock/github/example/repository /path/to/instance
+```
+
+Omit both scope flags for an unscoped local claim. This writes an audit intent
+with the invoking OS user ID, key, run and reason before releasing custody, then
+records `claim.force_released`. An unavailable audit journal blocks the override.
+The operator accepts responsibility for any still-running provider request; this
+escape hatch does not cancel a remote merge. Prefer the fixed expiry unless the
+outcome has been verified.
+
+## Withdrawing passes after base movement
+
+With `github:pr:review` declared, `post-merge` revisits the standing native
+verdicts of open siblings and `reconcile-post-merge` sweeps open PRs even when
+Goobers did not perform the merge. Both use the review identity that owns the
+status context. The shipped merge-review workflows declare this credential on
+both tasks. Existing workflows without it still load and run, but emit a warning
+and do not advance the native-verdict sweep; add the capability and grant that
+identity commit-status read/write access to enable this protection. Azure DevOps
+has no native verdict reader on this path and is not covered by this sweep.
+
+Only a readable existing successful verdict is eligible. A current-base pass
+and a pass whose base advance is provably disjoint from the PR's files remain
+unchanged. Overlap, rename-source overlap, a divergent/rewound base, malformed
+base evidence, or an unreadable base comparison withdraws the pass to pending.
+A GitHub comparison reaching its [300-file limit](https://docs.github.com/en/rest/commits/commits#compare-two-commits)
+is also unverifiable; pagination does not reveal the omitted files.
+An unreadable native status is retried; it is never treated as proof that a
+status exists. No status is created on an unreviewed head. Pending/failing
+verdicts stay unchanged.
+
+### Sweep latency and recovery
+
+`maxPullRequests` bounds native-verdict attempts per reconciliation invocation
+(default 10, maximum 100), independently of the existing park/queue batches.
+The durable cursor saves a fetched page before effects and checkpoints after
+each attempt. Failures rotate through a retry queue, sharing the budget with
+new pages, so one broken PR cannot starve the scan. Changing the budget retains
+the current page size until wraparound; process restarts resume pending work.
+Each pass through the list starts over to detect subsequent external landings.
+
+For a stable list of N PRs, a healthy scheduler and no failures, allow roughly
+`ceil(N / batch)` successful invocations plus one wraparound invocation for a
+complete visit, plus provider request time. Retry work reduces fresh-page
+throughput. The reference workflow runs hourly, so this is eventual withdrawal,
+not instant invalidation or a wall-clock SLA. Scheduling limits, provider
+outages, a disabled workflow, or a changing paginated list can increase delay.
+Require branches to be up to date before merging when that residual window is
+unacceptable. No branch-protection setting is changed automatically.
+
+### Publication custody
+
+Native publication and withdrawal use the existing `publication-lock/` custody
+implementation described above, shared with authoritative finding publication
+and final landing. Local and claims-plane clients contend on the same record. Withdrawal reads
+the live PR and native status after acquiring custody, checks the delta, and
+rechecks head/base before writing. A queued withdrawal therefore preserves a
+fresh pass for the current base. Publication also rechecks its pins after
+acquiring custody, so a queued old review cannot restore a pass for a moved
+base. The provider call completes before custody is released. Claim acquisition is
+bounded to two minutes and the action has a one-minute deadline inside a
+five-minute lease. Custody is verified after the action; a deadline or unverifiable
+ownership retains the claim until expiry and reports an error.
+
+This requires one owning gaggle and publishing identity for the status context,
+all writers using this protocol, and at most one native verdict/merge stage per
+run at a time (the shipped workflow is sequential). The claims lease is owned
+by run, not stage. Other installations, manual status writers, and legacy
+binaries do not share that custody. GitHub/Gitea commit-status APIs offer no
+conditional write or fencing token: an ambiguous request completing remotely
+after a crash, cancellation, or lease loss is outside this ordering guarantee.
+The sweep will revisit it; this feature cannot promise zero stale exposure
+across those failures or an atomic provider base-update/status-withdrawal.

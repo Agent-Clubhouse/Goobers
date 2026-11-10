@@ -21,9 +21,9 @@ var ErrSandboxUnavailable = errors.New("harness: sandbox enforcement is enabled 
 
 // sandboxRuntimeSubdir is the workspace-relative directory holding the
 // per-attempt runtime state a confined Copilot CLI needs to write: its
-// COPILOT_HOME (config, session state), a private TMPDIR, and its log
-// directory. Keeping them inside the workspace means the policy needs no
-// writable roots beyond the worktree for the CLI's own state — the exact
+// COPILOT_HOME (config, session state) and a private TMPDIR. Raw debug logs
+// use a separate external private directory prepared by the capture owner.
+// Keeping the other runtime state inside the workspace follows the
 // recipe the sandbox package's live probe codified (ADR-0001: a fresh
 // in-worktree COPILOT_HOME per sandboxed run), under the same reserved
 // .goobers/ prefix the adapter already uses for prompt.md.
@@ -39,7 +39,6 @@ const sandboxRuntimeSubdir = ".goobers/sandbox"
 type copilotConfinement struct {
 	copilotHome   string
 	tempDir       string
-	logDir        string
 	writableRoots []string
 }
 
@@ -55,7 +54,7 @@ type copilotConfinement struct {
 //
 // The directories are recorded under the workspace spelling the caller
 // passed, not the canonicalized one safepath returns: these paths are handed
-// to the confined subprocess (COPILOT_HOME, TMPDIR, --log-dir) alongside a
+// to the confined subprocess (COPILOT_HOME, TMPDIR) alongside a
 // sandbox policy written in terms of that same workspace root, and on a
 // platform where the workspace is reached through a symlink (macOS's
 // /var -> /private/var, a Windows 8.3 short path) a canonicalized prefix
@@ -77,9 +76,6 @@ func prepareCopilotConfinement(workspace string) (*copilotConfinement, error) {
 		return nil, err
 	}
 	if c.tempDir, err = mkdir("tmp"); err != nil {
-		return nil, err
-	}
-	if c.logDir, err = mkdir("logs"); err != nil {
 		return nil, err
 	}
 	roots, err := gitWritableRoots(workspace)

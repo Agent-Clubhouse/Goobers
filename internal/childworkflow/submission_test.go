@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 type submissionAuthority struct {
@@ -51,7 +56,7 @@ func submissionFixture(t *testing.T) (*SubmissionService, *submissionAuthority, 
 	}
 	s := &SubmissionService{Queue: queue, Authority: resolver, Now: func() time.Time { return time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC) }}
 	bindSubmissionOrigin(t, s, authority.Origin, "")
-	t.Cleanup(func() { _ = s.Queue.Close() })
+	t.Cleanup(func() { _ = s.Queue.(*triggerqueue.Store).Close() })
 	return s, resolver, path
 }
 
@@ -88,10 +93,12 @@ func TestSubmissionRevalidatesAndReopensExactCustody(t *testing.T) {
 	if _, err := s.Validate(t.Context(), origin, source); err != nil {
 		t.Fatal(err)
 	}
+
 	db := submissionDB(t, path)
 	if n := proposalCount(t, db); n != 0 {
 		t.Fatalf("advisory validation wrote %d artifacts", n)
 	}
+
 	accepted, err := s.Submit(t.Context(), origin, SubmissionRequest{InvocationKey: "call", Source: source})
 	if err != nil || accepted.Duplicate {
 		t.Fatalf("submit=%+v, %v", accepted, err)
@@ -99,11 +106,11 @@ func TestSubmissionRevalidatesAndReopensExactCustody(t *testing.T) {
 	if accepted.Envelope.Kind != ChildStartKind || accepted.Envelope.SourceDigest != digest(source) || accepted.Envelope.ConfigDigest != origin.ConfigDigest || accepted.Envelope.PolicyDigest != origin.PolicyDigest || accepted.Child.ProposalDigest != digest(source) {
 		t.Fatalf("pins=%+v", accepted)
 	}
-	receipt, err := s.Queue.Get(t.Context(), accepted.Child.AcceptanceID, resolver.current.Actor)
+	receipt, err := s.Queue.(*triggerqueue.Store).Get(t.Context(), accepted.Child.AcceptanceID, resolver.current.Actor)
 	if err != nil || len(receipt.Payload) > triggerqueue.MaxPayloadBytes || bytes.Contains(receipt.Payload, source) {
 		t.Fatalf("ordinary payload contains source or invalid receipt: %v", err)
 	}
-	if err := s.Queue.Close(); err != nil {
+	if err := s.Queue.(*triggerqueue.Store).Close(); err != nil {
 		t.Fatal(err)
 	}
 	s.Queue, err = triggerqueue.Open(path)
@@ -128,6 +135,168 @@ func TestSubmissionRevalidatesAndReopensExactCustody(t *testing.T) {
 	}
 	if _, err := s.Submit(t.Context(), origin, SubmissionRequest{InvocationKey: "call", Source: append([]byte("# changed bytes\n"), source...)}); !errors.Is(err, triggerqueue.ErrConflict) {
 		t.Fatalf("changed source retry=%v", err)
+	}
+}
+
+func TestSubmissionPinsUnscoredStaleModelEvidenceWithoutChangingAdmission(t *testing.T) {
+	s, resolver, _ := submissionFixture(t)
+	resolver.current.Admission.ClusterModelConfigured = true
+	resolver.current.Admission.ClusterModel = &workflowcluster.Model{
+		Version: workflowcluster.ModelVersion, ID: "sha256:model", FeatureVersion: "workflowcluster.structural/v0",
+	}
+	accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "stale-model", Source: []byte(validProposal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := accepted.Envelope.Novelty
+	if n == nil || n.Scored || n.Reason != workflowcluster.UnscoredStaleModel || n.ModelVersion != workflowcluster.ModelVersion {
+		t.Fatalf("novelty = %+v", n)
+	}
+	if got := accepted.Envelope.JournalNovelty(); got == nil || got.Reason != workflowcluster.UnscoredStaleModel || got.ModelVersion != workflowcluster.ModelVersion {
+		t.Fatalf("journal novelty = %+v", got)
+	}
+}
+
+func TestSubmissionPinsHistoricalOutcome(t *testing.T) {
+	s, resolver, _ := submissionFixture(t)
+	proposal, err := validator(t, resolver.current.Admission).Validate([]byte(validProposal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := workflow.Definition{
+		Name: proposal.Workflow.Name, DSLVersion: proposal.Workflow.DSLVersion,
+		Spec: proposal.Workflow.Spec, Annotations: proposal.Workflow.Annotations,
+	}
+	features, err := workflowcluster.ExtractDefinition(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	points := []workflowcluster.Point{
+		workflowcluster.StructuralPoint("a", features),
+		workflowcluster.StructuralPoint("b", features),
+		workflowcluster.StructuralPoint("c", features),
+	}
+	model, err := workflowcluster.Fit(workflowcluster.StructuralFeatureVersion, points, workflowcluster.Options{
+		MinClusterSize: 2, Resamples: 10, Seed: 1, AllowSingleCluster: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.current.Admission.ClusterModelConfigured = true
+	resolver.current.Admission.ClusterModel = &model
+	resolver.current.Admission.ClusterFitness = map[string]workflowcluster.ClusterFitness{
+		"c0": {ClusterID: "c0", RunCount: 17, SuccessRate: 0.75, InsufficientRuns: false},
+	}
+
+	accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "history", Source: []byte(validProposal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := accepted.Envelope.Novelty.HistoricalOutcome
+	if outcome == nil || outcome.RunCount != 17 || outcome.SuccessRate != 0.75 || outcome.InsufficientRuns {
+		t.Fatalf("historical outcome = %+v", outcome)
+	}
+	journalOutcome := accepted.Envelope.JournalNovelty().HistoricalOutcome
+	if journalOutcome == nil || journalOutcome.RunCount != 17 || journalOutcome.SuccessRate != 0.75 {
+		t.Fatalf("journal historical outcome = %+v", journalOutcome)
+	}
+}
+
+// oodSubmissionFixture configures an empty frozen model, so every proposal is
+// scored out of distribution.
+func oodSubmissionFixture(t *testing.T, requireApproval bool) (*SubmissionService, *submissionAuthority) {
+	t.Helper()
+	s, resolver, _ := submissionFixture(t)
+	resolver.current.Admission.ClusterModelConfigured = true
+	resolver.current.Admission.ClusterModel = &workflowcluster.Model{
+		Version: workflowcluster.ModelVersion, ID: "sha256:model", FeatureVersion: workflowcluster.StructuralFeatureVersion,
+	}
+	resolver.current.Admission.ParentTask.ChildWorkflows.RequireHumanApprovalForOutOfDistribution = requireApproval
+	validated, err := validator(t, resolver.current.Admission).Validate([]byte(validProposal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousGrant := resolver.current.Origin.GrantID
+	resolver.current.Origin.GrantID = "policy-grant"
+	resolver.current.Origin.AttemptID = "policy-attempt"
+	resolver.current.Origin.PolicyDigest = validated.PolicyDigest
+	bindSubmissionOrigin(t, s, resolver.current.Origin, previousGrant)
+	return s, resolver
+}
+
+func TestSubmissionOODHumanApprovalPolicyIsOffByDefault(t *testing.T) {
+	s, resolver := oodSubmissionFixture(t, false)
+	accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+	if err != nil || accepted.Admission != nil {
+		t.Fatalf("Submit = %+v, %v", accepted.Admission, err)
+	}
+	if accepted.Envelope.Novelty == nil || !accepted.Envelope.Novelty.OutOfDistribution || accepted.Envelope.Novelty.HumanApprovalRequired {
+		t.Fatalf("default novelty = %+v", accepted.Envelope.Novelty)
+	}
+	if err := s.Queue.(*triggerqueue.Store).BeginDispatch(t.Context(), accepted.Child.AcceptanceID); err != nil {
+		t.Fatalf("unheld dispatch = %v", err)
+	}
+}
+
+func TestSubmissionOODHumanApprovalHoldsCustodyForReview(t *testing.T) {
+	for _, approve := range []bool{true, false} {
+		t.Run(map[bool]string{true: "approve", false: "reject"}[approve], func(t *testing.T) {
+			s, resolver := oodSubmissionFixture(t, true)
+			store := s.Queue.(*triggerqueue.Store)
+			accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+			if err != nil || accepted.Child.State != triggerqueue.ChildQueued {
+				t.Fatalf("Submit = %+v, %v", accepted.Child, err)
+			}
+			a := accepted.Admission
+			if a == nil || a.State != triggerqueue.ChildAdmissionPending || a.Reason != AdmissionHoldReasonOutOfDistribution {
+				t.Fatalf("admission = %+v", a)
+			}
+			var evidence journal.ChildNovelty
+			if err := json.Unmarshal(a.Evidence, &evidence); err != nil || !evidence.Valid() || !evidence.HumanApprovalRequired || !evidence.OutOfDistribution || evidence.ModelID != "sha256:model" {
+				t.Fatalf("pinned evidence = %s, %v", a.Evidence, err)
+			}
+			if err := store.BeginDispatch(t.Context(), accepted.Child.AcceptanceID); !errors.Is(err, triggerqueue.ErrTransition) {
+				t.Fatalf("held child dispatched: %v", err)
+			}
+			retry, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+			if err != nil || !retry.Duplicate || retry.Admission == nil || retry.Admission.State != triggerqueue.ChildAdmissionPending {
+				t.Fatalf("retry = %+v, %v", retry.Admission, err)
+			}
+			decided, err := store.DecideChildAdmission(t.Context(), triggerqueue.ChildAdmissionDecision{ChildID: accepted.Child.ChildID, Approve: approve, Actor: "operator"}, s.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.Get(t.Context(), resolver.current.Origin, "ood")
+			if err != nil || got.Admission == nil || got.Admission.State != decided.State {
+				t.Fatalf("Get admission = %+v, %v", got.Admission, err)
+			}
+			dispatchErr := store.BeginDispatch(t.Context(), accepted.Child.AcceptanceID)
+			if approve {
+				if dispatchErr != nil {
+					t.Fatalf("approved dispatch = %v", dispatchErr)
+				}
+				return
+			}
+			if !errors.Is(dispatchErr, triggerqueue.ErrTransition) {
+				t.Fatalf("rejected dispatch = %v", dispatchErr)
+			}
+			if _, reason, err := store.ChildRejection(t.Context(), accepted.Child.Identity); err != nil || reason != triggerqueue.ChildAdmissionRejectedReason {
+				t.Fatalf("rejection = %q, %v", reason, err)
+			}
+		})
+	}
+}
+
+type holdlessQueue struct{ ChildQueue }
+
+func TestSubmissionOODHumanApprovalFailsClosedWithoutDurableHold(t *testing.T) {
+	s, resolver := oodSubmissionFixture(t, true)
+	store := s.Queue
+	s.Queue = holdlessQueue{store}
+	t.Cleanup(func() { s.Queue = store })
+	accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+	if !errors.Is(err, ErrHumanApprovalRequired) || accepted.Child.AcceptanceID != "" {
+		t.Fatalf("Submit = %+v, %v", accepted.Child, err)
 	}
 }
 
@@ -169,7 +338,7 @@ func TestSubmissionRequiresCurrentAuthorityBeforeCustodyReads(t *testing.T) {
 	}
 	resolver.revoked = true
 	// A closed database proves the denied operation never reaches custody reads.
-	if err := s.Queue.Close(); err != nil {
+	if err := s.Queue.(*triggerqueue.Store).Close(); err != nil {
 		t.Fatal(err)
 	}
 	for _, operation := range []func() error{
@@ -204,7 +373,7 @@ func TestSubmissionRechecksAuthorityImmediatelyBeforeAcceptance(t *testing.T) {
 				case "narrowed":
 					resolver.current.Admission.GrantedCapabilities = []string{"agent:model"}
 				case "cancelled":
-					if err := s.Queue.FenceChildParent(t.Context(), triggerqueue.ChildParent{Gaggle: resolver.current.Origin.Gaggle, ParentRunID: resolver.current.Origin.RunID}, "human", s.Now()); err != nil {
+					if err := s.Queue.(*triggerqueue.Store).FenceChildParent(t.Context(), triggerqueue.ChildParent{Gaggle: resolver.current.Origin.Gaggle, ParentRunID: resolver.current.Origin.RunID}, "human", s.Now()); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -224,7 +393,7 @@ func TestSubmissionRechecksAuthorityImmediatelyBeforeAcceptance(t *testing.T) {
 			if n := proposalCount(t, db); n != 0 {
 				t.Fatalf("failed acceptance retained %d blobs", n)
 			}
-			pending, err := s.Queue.Pending(t.Context(), 100)
+			pending, err := s.Queue.(*triggerqueue.Store).Pending(t.Context(), 100)
 			if err != nil || len(pending) != 0 {
 				t.Fatalf("failed acceptance retained starts: %+v, %v", pending, err)
 			}
@@ -280,5 +449,30 @@ func TestSubmissionScopeAndOccupiedSlotCannotAccumulateArtifacts(t *testing.T) {
 	bindSubmissionOrigin(t, s, foreign, "")
 	if _, err := s.Get(t.Context(), foreign, "call"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("sibling read another occurrence=%v", err)
+	}
+}
+
+func TestSubmissionRetryKeepsOriginalNoveltyAfterModelChange(t *testing.T) {
+	s, resolver := oodSubmissionFixture(t, true)
+	request := SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)}
+	first, err := s.Submit(t.Context(), resolver.current.Origin, request)
+	if err != nil || first.Envelope.Novelty == nil {
+		t.Fatalf("Submit = %+v, %v", first.Envelope.Novelty, err)
+	}
+	resolver.current.Admission.ClusterModel = &workflowcluster.Model{Version: workflowcluster.ModelVersion, ID: "sha256:restarted-model", FeatureVersion: workflowcluster.StructuralFeatureVersion}
+	if fresh, err := s.Validate(t.Context(), resolver.current.Origin, request.Source); err != nil || fresh.Novelty == nil || fresh.Novelty.ModelID == first.Envelope.Novelty.ModelID {
+		t.Fatalf("model change did not change live novelty: %+v, %v", fresh, err)
+	}
+	retry, err := s.Submit(t.Context(), resolver.current.Origin, request)
+	if err != nil || !retry.Duplicate || retry.Child.ChildID != first.Child.ChildID || retry.Envelope.Novelty == nil || retry.Envelope.Novelty.ModelID != "sha256:model" {
+		t.Fatalf("retry = %+v, %v", retry, err)
+	}
+	if retry.Admission == nil || retry.Admission.State != triggerqueue.ChildAdmissionPending {
+		t.Fatalf("retry admission = %+v", retry.Admission)
+	}
+	other := request
+	other.Source = []byte(strings.Replace(validProposal, "Run the local check", "Run another local check", 1))
+	if _, err := s.Submit(t.Context(), resolver.current.Origin, other); err == nil {
+		t.Fatal("different proposal reused the retained receipt")
 	}
 }

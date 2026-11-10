@@ -99,12 +99,36 @@ func ActiveClaimsFromEntries(entries []localscheduler.ClaimEntry, now time.Time)
 // The ledger is replaced atomically on every mutation, so an unlocked read
 // sees one whole committed state; it may be a moment behind a concurrent
 // claim, which is the same freshness every other read route offers.
-func (s *Local) ActiveClaims(context.Context) (ActiveClaimList, error) {
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(s.sources.Layout.SchedulerDir(), "claims.json"))
+func (s *Local) ActiveClaims(ctx context.Context) (ActiveClaimList, error) {
+	view, err := s.claimView(ctx)
 	if err != nil {
 		return ActiveClaimList{}, fmt.Errorf("read claim ledger: %w", err)
 	}
-	return ActiveClaimListAt(ledger.Snapshot(), s.now().UTC()), nil
+	return ActiveClaimListAt(view.Snapshot(), s.now().UTC()), nil
+}
+
+// ClaimView is the read surface of a claim ledger: the live entries and, per
+// run, its leases and lease history. *localscheduler.ClaimLedger is one.
+type ClaimView interface {
+	Snapshot() []localscheduler.ClaimEntry
+	ForRunAll(runID string) []localscheduler.ClaimEntry
+	HistoryForRun(runID string) []localscheduler.ClaimEntry
+}
+
+var _ ClaimView = (*localscheduler.ClaimLedger)(nil)
+
+// claimView resolves the claim ledger: the configured source, else the
+// instance's claims.json. A rootless service with no source has no ledger at
+// all, which is unavailable rather than "no claims".
+func (s *Local) claimView(ctx context.Context) (ClaimView, error) {
+	switch {
+	case s.sources.ClaimSnapshot != nil:
+		return s.sources.ClaimSnapshot(ctx)
+	case s.sources.Rootless:
+		return nil, fmt.Errorf("%w: the claim ledger is not served by this API", ErrUnavailable)
+	default:
+		return localscheduler.OpenClaimLedger(filepath.Join(s.sources.Layout.SchedulerDir(), "claims.json"))
+	}
 }
 
 // ActiveClaimListAt is the active-claims view of entries observed at now: the

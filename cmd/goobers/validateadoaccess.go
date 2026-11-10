@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -164,7 +165,7 @@ func checkADORepositoryAccess(repos []instance.RepoRef, runBranchRoots map[int][
 func adoRunBranchRootsByRepo(cfg *instance.Config, set *instance.ConfigSet) map[int][]string {
 	out := map[int][]string{}
 	for _, gaggle := range set.Gaggles {
-		repo, found := configuredRepoForProject(cfg, gaggle.Spec.Project)
+		repo, found := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project)
 		if !found || repo.Provider != string(providers.ProviderADO) {
 			continue
 		}

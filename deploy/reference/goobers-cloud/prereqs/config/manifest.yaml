@@ -1,0 +1,12 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: cloud-reference
+  annotations:
+    goobers.dev/acknowledge-manual-only: "true"
+spec:
+  instance:
+    name: cloud-reference
+    environment: staging
+  gaggles:
+    - reference

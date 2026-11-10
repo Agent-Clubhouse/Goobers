@@ -24,6 +24,32 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestTraceVerificationShowsScopeAndRepairLimits(t *testing.T) {
+	attribution := creditgraph.Attribution{
+		Verifications: []creditgraph.VerificationRecord{
+			{ID: "verification:4", RepairVerified: true, VerificationReport: creditgraph.VerificationReport{
+				Property: "roundtrip", Subject: "sha256:changed-subject", Outcome: creditgraph.VerificationProven, Repairs: "verification:1",
+			}},
+			{ID: "verification:8", RepairReason: "checker changed", VerificationReport: creditgraph.VerificationReport{
+				Property: "roundtrip", Subject: "sha256:other-subject", Outcome: creditgraph.VerificationProven, Repairs: "verification:1",
+			}},
+		},
+		UnverifiedVerifications: []creditgraph.VerificationRecord{{}},
+		DroppedVerifications:    2,
+	}
+	var output bytes.Buffer
+	printTraceAttributionSummary(&output, traceBackprop{record: &creditgraph.RunRecord{Attribution: attribution}})
+	for _, want := range []string{
+		"2 recorded, 1 unverified, 2 dropped", "not causal blame",
+		"roundtrip: proven (subject sha256:changed-subject)",
+		"scoped repair of verification:1", "repair unverified: checker changed",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("trace missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
 func TestFormatEventShowsLearningEpisodeAndFindingOutcomes(t *testing.T) {
 	injected := formatEvent(journal.Event{
 		Seq:  9,
@@ -142,6 +168,19 @@ func TestTraceDefaultTextShowsContinuationLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := continuation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := rollup.Open(instance.NewLayout(root).TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{sourceID, continuationID} {
+		if err := db.IngestRun(t.Context(), filepath.Join(instance.NewLayout(root).RunsDir(), id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1997,9 +2036,20 @@ func TestTraceShowsRepassCount(t *testing.T) {
 			if !strings.Contains(stdout.String(), "\nlast activity: ") {
 				t.Fatalf("trace stdout missing last activity: %q", stdout.String())
 			}
-			if !strings.Contains(stdout.String(), "\n"+tt.want+"\nevents:") {
-				t.Fatalf("trace stdout missing repass header %q after phase: %q", tt.want, stdout.String())
+			wantHeaders := "\n" + tt.want + "continuations: incomplete (lineage index unavailable or awaiting journal ingestion)\n\nevents:"
+			if !strings.Contains(stdout.String(), wantHeaders) {
+				t.Fatalf("trace stdout missing ordered repass and incomplete-lineage headers %q: %q", wantHeaders, stdout.String())
 			}
 		})
+	}
+}
+
+func TestPrintRunLineageMarksPartialPagesAndHistory(t *testing.T) {
+	var output bytes.Buffer
+	printRunLineage(&output, &readservice.RunLineage{HistoricalRepassCountPartial: true, ContinuationsIncomplete: true, ContinuationsTruncated: true, ContinuationsNextCursor: "child-049"})
+	for _, want := range []string{"history: partial", "continuations: incomplete", "next cursor=child-049"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing %q: %s", want, output.String())
+		}
 	}
 }

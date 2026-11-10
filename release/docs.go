@@ -125,17 +125,17 @@ const (
 		"[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)\n" +
 		"for a full claude-code gaggle reference).\n\n" +
 		"### Check prerequisites\n\n" +
-		"The sample's CI command requires Node.js 20 or newer and npm. Confirm both are\n" +
+		"The sample's CI command uses Node.js 24.22.1 and npm. Confirm both are\n" +
 		"available on the same `PATH` Goobers will use before materializing the sample:\n\n" +
 		"```sh\n" +
 		"node --version\n" +
 		"npm --version\n" +
 		"```\n\n" +
-		"The first command must report `v20.0.0` or newer, and both commands must\n" +
+		"The first command should report `v24.22.1`, and both commands must\n" +
 		"succeed. At run start, Goobers preflights the configured `npm` CI executable\n" +
 		"before any workflow stage executes. If npm is missing, the run fails before it\n" +
 		"claims or changes an issue with a `ciCommand executable \"npm\" not found` error;\n" +
-		"install Node.js 20+ and npm, then run the command again. The preflight checks\n" +
+		"install Node.js 24.22.1 and npm, then run the command again. The preflight checks\n" +
 		"that npm exists, not the Node.js major version, so do not skip the literal\n" +
 		"version checks above.\n\n" +
 		"### Materialize the sample and the instance\n\n" +
@@ -253,7 +253,7 @@ const (
 		"The remaining sections contain Linux-specific credential, live-run, and\n" +
 		"systemd guidance. They supplement rather than duplicate either route.\n\n"
 	linuxQuickstartSourceCIJob      = "CI job (`.github/workflows/ci.yml`), which runs the shipped binary end to end —\n"
-	linuxQuickstartSourceToolchain  = "| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.9**) |\n"
+	linuxQuickstartSourceToolchain  = "| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.10**) |\n"
 	linuxQuickstartSourceValidation = "> **Linux delta — deterministic `network: none` stages use user namespaces.** On\n" +
 		"> Linux, a workflow stage that declares `network: none` is isolated with an\n" +
 		"> unprivileged user + network namespace (`CLONE_NEWUSER`), not an external\n" +
@@ -269,9 +269,9 @@ const (
 		"```\n\n"
 	linuxQuickstartSourcePrerequisites = "## 1. Install prerequisites\n\n" +
 		"```sh\n" +
-		"# Go — install the toolchain matching go.mod (1.26.9). Distro packages often lag;\n" +
+		"# Go — install the toolchain matching go.mod (1.26.10). Distro packages often lag;\n" +
 		"# prefer the official tarball:\n" +
-		"curl -sSfL https://go.dev/dl/go1.26.9.linux-amd64.tar.gz | sudo tar -C /usr/local -xz\n" +
+		"curl -sSfL https://go.dev/dl/go1.26.10.linux-amd64.tar.gz | sudo tar -C /usr/local -xz\n" +
 		"export PATH=\"/usr/local/go/bin:$(go env GOPATH)/bin:$PATH\"\n\n" +
 		"# Git (>= 2.17 — any supported Ubuntu/Debian is newer):\n" +
 		"sudo apt-get update && sudo apt-get install --yes git\n\n" +
@@ -352,6 +352,15 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 	if err := releaseDocsGeneratorBuilder(repoRoot, generator, ldflags); err != nil {
 		cleanup()
 		return "", nil, err
+	}
+
+	// The repository also carries docs for other binaries. Only this
+	// release's generator may populate its CLI reference directories.
+	for _, sub := range []string{"cli", "man", "completion"} {
+		if err := os.RemoveAll(filepath.Join(docsDir, sub)); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("clear staged release %s docs: %w", sub, err)
+		}
 	}
 
 	generate := exec.Command(generator, "__generate-docs", docsDir)

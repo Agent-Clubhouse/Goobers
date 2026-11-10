@@ -150,6 +150,9 @@ func telemetryCLICommand() cliCommand {
 		subcommand("telemetry shadow", "shadow", apicontract.ActionReadOnlyNavigation, runTelemetryShadow).
 			withHelp("compare Backprop shadow-mode findings with actual run outcomes", telemetryShadowHelp).
 			withExamples("goobers telemetry shadow", "goobers telemetry shadow --json --gaggle=goobers"),
+		subcommand("telemetry gaggle", "gaggle", apicontract.ActionReadOnlyNavigation, runTelemetryGaggle).
+			withHelp("report gaggle-wide Backprop credit, recurring findings, trends, and links", telemetryGaggleHelp).
+			withExamples("goobers telemetry gaggle --gaggle=goobers", "goobers telemetry gaggle --gaggle=goobers --json --since=2026-01-01T00:00:00Z"),
 		subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 			withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 			withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
@@ -232,6 +235,10 @@ func advisoryPRCLICommands() []cliCommand {
 			withHelp("clear one private advisory disposition by explicit operator action", advisoryResetHelp).
 			withExamples("goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance"),
 	}
+}
+
+func runCompletionCandidatesCLI(args []string, stdout, _ io.Writer) int {
+	return runCompletionCandidates(args, stdout)
 }
 
 func init() {
@@ -318,6 +325,7 @@ func init() {
 			withSynopsis(synopsisByID["examples"]).
 			withHelp("browse canonical workflow examples embedded in the binary", examplesHelp).
 			withExamples("goobers examples list", "goobers examples show implementation"),
+		workflowGymCLICommand(),
 		coreGroupCommand(
 			"scaffold",
 			runScaffold,
@@ -385,7 +393,7 @@ func init() {
 		coreCommand("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
-			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
+			withExamples("goobers validate", "goobers validate --json", "goobers validate --target cloud", "goobers validate --target cloud --format json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("lint", apicontract.ActionConfigTime, runLint).
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
@@ -505,22 +513,6 @@ func init() {
 				withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
 		).withSynopsis(synopsisByID["temporal"]).withHelp("operate Temporal payload services", temporalHelp).
 			withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
-		command("engine-start", apicontract.ActionDaemonLifecycle, runEngineStart).
-			withSynopsis(synopsisByID["engine-start"]).
-			withHelp("dispatch one run onto the tier-3 engine via Temporal (experimental)", engineStartHelp).
-			withExamples("goobers engine-start default-implement"),
-		command("engine-queues", apicontract.ActionReadOnlyNavigation, runEngineQueues).
-			withSynopsis(synopsisByID["engine-queues"]).
-			withHelp("report which workers poll this instance's engine and dispatch task queues (experimental)", engineQueuesHelp).
-			withExamples("goobers engine-queues", "goobers engine-queues --json"),
-		command("engine-project", apicontract.ActionDaemonLifecycle, runEngineProject).
-			withSynopsis(synopsisByID["engine-project"]).
-			withHelp("write a completed engine run's journal into the instance (experimental)", engineProjectHelp).
-			withExamples("goobers engine-project --gaggle example <run-id>"),
-		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
-			withSynopsis(synopsisByID["worker"]).
-			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
-			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
 		command("config-seed", apicontract.ActionMaintenance, runConfigSeed).
 			withSynopsis(synopsisByID["config-seed"]).
 			withHelp("seed a private worker instance from a rendered configuration mirror", configSeedHelp).
@@ -557,6 +549,10 @@ func init() {
 			withSynopsis(synopsisByID["rerun-stage"]).
 			withHelp("rerun a stage with a recorded instruction addendum", rerunStageHelp).
 			withExamples(`goobers rerun-stage --addendum="use the parser seam" <run-id> <stage>`),
+		runtimeCommand("retry-stage", "retry", runRetryStage).
+			withSynopsis(synopsisByID["retry-stage"]).
+			withHelp("retry a previously-run deterministic task", retryStageHelp).
+			withExamples("goobers retry-stage <run-id> <stage>"),
 		command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
 		command(dispatcher.DispatchExecCommand, apicontract.ActionWorkflowExecution, runDispatchExec),
 		command(demoProviderCommand, apicontract.ActionWorkflowExecution, runDemoProvider),
@@ -566,6 +562,7 @@ func init() {
 			withHelp("fire an external signal to subscribed workflows", signalHelp).
 			withExamples("goobers signal deploy-approved"),
 		workflowCommands(),
+		labsCLICommand(),
 		groupCommand(
 			"runs",
 			runRuns,
@@ -738,10 +735,9 @@ func init() {
 			withSynopsis(synopsisByID["completion"]).
 			withHelp("generate a shell completion script", completionHelp).
 			withExamples("goobers completion bash", "goobers completion zsh", "goobers completion powershell"),
-		command("__complete", apicontract.ActionConfigTime, func(args []string, stdout, _ io.Writer) int {
-			return runCompletionCandidates(args, stdout)
-		}),
+		command("__complete", apicontract.ActionConfigTime, runCompletionCandidatesCLI),
 		command("__generate-docs", apicontract.ActionConfigTime, runGenerateDocs),
+		command("__claude-host-safety", apicontract.ActionReadOnlyNavigation, runClaudeHostSafety),
 		telemetryCLICommand(),
 		groupCommand(
 			"journal",
@@ -811,6 +807,10 @@ func init() {
 			withSynopsis(synopsisByID["check-fail-first"]).
 			withHelp("enforce fail-first evidence for a new workflow gate (a workflow stage)", checkFailFirstHelp).
 			withExamples("goobers check-fail-first"),
+		stageCommand("fluid-ui-request", apicontract.ActionWorkflowExecution, runFluidUIRequest).
+			withSynopsis(synopsisByID["fluid-ui-request"]).
+			withHelp("load a Labs Fluid UI request or validate its customization candidate (a workflow stage)", fluidUIRequestHelp).
+			withExamples("goobers fluid-ui-request --load", "goobers fluid-ui-request --validate"),
 		stageCommand("open-pr", apicontract.ActionWorkflowExecution, runOpenPR).
 			withSynopsis(synopsisByID["open-pr"]).
 			withHelp("open or update the run's PR (a workflow stage)", openPRHelp).
@@ -819,6 +819,10 @@ func init() {
 			withSynopsis(synopsisByID["report-pr-status"]).
 			withHelp("publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)", reportPRStatusHelp).
 			withExamples("goobers report-pr-status"),
+		stageCommand("decide", apicontract.ActionWorkflowExecution, runDecide).
+			withSynopsis(synopsisByID["decide"]).
+			withHelp("ask the decision model a thresholded yes/no question (a workflow stage)", decideHelp).
+			withExamples("goobers decide --name complete --question \"Does the summary cover the request?\" --state-file handoff.json"),
 		stageCommand("gate-removal-guard", apicontract.ActionWorkflowExecution, runGateRemovalGuard).
 			withSynopsis(synopsisByID["gate-removal-guard"]).
 			withHelp("block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)", gateRemovalGuardHelp).

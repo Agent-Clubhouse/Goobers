@@ -241,6 +241,7 @@ func TestDefectAggregateCausalCreditWireShapeMatches(t *testing.T) {
 }
 
 func TestDefectAggregateAttributionCohortWireShapeMatches(t *testing.T) {
+	score := -0.6
 	cohort := creditgraph.CohortAggregation{
 		EffectiveVersion: "sha256:cohort",
 		Workload:         "manual",
@@ -248,6 +249,7 @@ func TestDefectAggregateAttributionCohortWireShapeMatches(t *testing.T) {
 		TopContributingPaths: []creditgraph.ContributingPath{{
 			Nodes:      []string{"outcome", "stage:implement#1", "toolresult:call-1"},
 			Share:      0.6,
+			Score:      &score,
 			Confidence: 0.8,
 			Evidence: []creditgraph.AttributionEvidenceLink{{
 				RunID:           "run-1",
@@ -279,6 +281,7 @@ func TestDefectAggregateAttributionCohortWireShapeMatches(t *testing.T) {
 		TopContributingPaths: []telemetryclient.ContributingPath{{
 			Nodes:      append([]string(nil), cohort.TopContributingPaths[0].Nodes...),
 			Share:      cohort.TopContributingPaths[0].Share,
+			Score:      cohort.TopContributingPaths[0].Score,
 			Confidence: cohort.TopContributingPaths[0].Confidence,
 			Evidence: []telemetryclient.AttributionEvidenceLink{{
 				RunID:           cohort.TopContributingPaths[0].Evidence[0].RunID,

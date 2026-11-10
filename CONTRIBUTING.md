@@ -15,11 +15,19 @@ and [`docs/VISION.md`](docs/VISION.md).
 ## Development setup
 
 All development requires the Go toolchain declared in [`go.mod`](go.mod)
-(currently Go 1.26.9), Git, and
+(currently Go 1.26.10), Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
-[`.golangci.yml`](.golangci.yml)). Node.js 24 with npm is required only for
+[`.golangci.yml`](.golangci.yml)). Node.js 24.22.1 with npm is required only for
 Portal work, complete dashboard-enabled binaries, and the merge/full validation
 tiers; ordinary Go builds, tests, vet, and `make verify-fast` remain Node-free.
+
+Use the root `.nvmrc` to select the patched development runtime. Container
+images and CI select exact versions independently. Runner capabilities are
+exact routing claims; known toolchains also check the declared version prefix.
+The Node.js scaffolding default is `node@24`, which requires a Node 24 runner
+but neither installs Node nor guarantees a patched version. When changing a
+runner major, update its matching workflow capabilities together; keep the
+actual runtime on a supported security patch.
 
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
@@ -212,6 +220,7 @@ command instead. **CI:** each validation job maps to the same contract:
 | `dead-code analysis` | Reachability checks for Go and portal production code |
 | `checks (portal UX · contracts · package)` | Portal, canvas-extension, generated-contract, embedded-asset, package, and manifest slice of `make ci` |
 | `CI scope (portal-only or full)` | Classifies the complete PR merge-base diff; uncertainty retains full CI |
+| `cloud PostgreSQL and Azurite integration` | Path-conditional cloud package and shared-store integration smoke against PostgreSQL 16 and Azurite |
 | `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
 | `lint (${{ matrix.goos }})` | `golangci-lint` across Linux, macOS, and Windows |
 | `darwin gate (build · vet)` | Linux cross-compile `go build` + `go vet` (tests included) of the whole tree for darwin/arm64 and darwin/amd64, built with cgo off as the release builds macOS binaries; the only pre-merge macOS gate |
@@ -398,9 +407,9 @@ not make the complete merge tier offline-capable.
 
 | Platform | Required tools | Merge-tier invocation |
 |---|---|---|
-| Linux | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
-| macOS | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
-| Windows | Go from `go.mod`, Node.js 24 with npm, Git for Windows, `golangci-lint` v2.12.2, 64-bit MinGW-w64 GCC | `go run ./test/ci` from PowerShell or Command Prompt; Bash and GNU Make are not required |
+| Linux | Go from `go.mod`, Node.js 24.22.1 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
+| macOS | Go from `go.mod`, Node.js 24.22.1 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
+| Windows | Go from `go.mod`, Node.js 24.22.1 with npm, Git for Windows, `golangci-lint` v2.12.2, 64-bit MinGW-w64 GCC | `go run ./test/ci` from PowerShell or Command Prompt; Bash and GNU Make are not required |
 
 The Windows compiler is required by Go's race detector, not by the CI task
 runner. Install a 64-bit MinGW-w64 GCC with runtime version 8 or newer, put its
@@ -705,6 +714,11 @@ Use a short imperative subject (`area: do the thing`), a body explaining *why* w
 not obvious, and reference issues (`Closes #123`). Keep unrelated changes out of the commit.
 
 ### cmd/goobers growth baseline
+
+Control-plane extraction PRs follow the stricter
+[move-safe gate rules](docs/guides/control-plane-extraction-gates.md) for
+deadcode identities, complexity rows, coverage, and non-transferable command
+growth credit.
 
 `make cmdgoobers-growth` checks physical lines and file count of direct non-test
 Go files in `cmd/goobers`, including all build tags, comments, and blank lines.

@@ -3,13 +3,14 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -48,9 +49,9 @@ import (
 // differently from the runner and the conformance diff would be the first
 // thing to notice.
 //
-// Artifact bytes are inline in JournalArtifactOp.Data, so the resolver is a
-// digest lookup with no I/O — and, unlike the runner's, it cannot fail for an
-// artifact this run recorded.
+// Inline artifact bytes resolve by digest with no I/O. Recorder receipts and
+// outbox artifacts carry only references; their events project normally, but
+// resolving bytes not present in workflow history fails closed.
 func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref) ([]byte, error), error) {
 	events := make([]journal.Event, 0, len(proj.Ops))
 	byName := map[string]journal.Ref{}
@@ -63,15 +64,25 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 			if a == nil {
 				return nil, nil, fmt.Errorf("engine: journal op %d records no artifact", i)
 			}
-			ref, err := journal.ArtifactRef(a.Data)
-			if err != nil {
-				return nil, nil, fmt.Errorf("engine: address artifact %q: %w", a.Name, err)
+			var ref journal.Ref
+			if a.Ref != nil {
+				var err error
+				ref, err = projectedArtifactRef(*a)
+				if err != nil {
+					return nil, nil, err
+				}
+			} else {
+				var err error
+				ref, err = journal.ArtifactRef(a.Data)
+				if err != nil {
+					return nil, nil, fmt.Errorf("engine: address artifact %q: %w", a.Name, err)
+				}
+				byDigest[ref.Digest] = a.Data
+				byPath[ref.Path] = a.Data
 			}
 			byName[a.Name] = ref
-			byDigest[ref.Digest] = a.Data
-			byPath[ref.Path] = a.Data
 			events = append(events, journal.Event{
-				Seq: uint64(len(events) + 1), Type: journal.EventArtifactRecorded,
+				Schema: journal.EventSchema, Seq: uint64(len(events) + 1), Type: journal.EventArtifactRecorded,
 				Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class,
 				Name: a.Name, Ref: &ref, Integrity: a.Integrity,
 			})
@@ -82,7 +93,7 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 			}
 			ref := s.Ref
 			events = append(events, journal.Event{
-				Seq: uint64(len(events) + 1), Type: journal.EventSpanRecorded,
+				Schema: journal.EventSchema, Seq: uint64(len(events) + 1), Type: journal.EventSpanRecorded,
 				Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
 				Name: s.Name, Ref: &ref,
 			})
@@ -118,6 +129,26 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 	return events, resolve, nil
 }
 
+// Receipt references retain their canonical CAS identity. Outbox references
+// instead project to their occurrence-scoped logical path, as before. Neither
+// contains inline bytes: consumers may describe the ref, but resolving bytes
+// not carried in history still fails closed through projectedEvents' resolver.
+func projectedArtifactRef(a JournalArtifactOp) (journal.Ref, error) {
+	ref := *a.Ref
+	if a.OutboxRelPath != "" || a.OutboxOccurrence != 0 {
+		if a.OutboxRelPath == "" || a.OutboxOccurrence == 0 {
+			return journal.Ref{}, fmt.Errorf("engine: incomplete outbox artifact %q", a.Name)
+		}
+		ref.Path = path.Join("artifacts", "outbox", a.Stage, fmt.Sprintf("attempt-%d", a.Attempt), fmt.Sprintf("occurrence-%d", a.OutboxOccurrence), a.OutboxRelPath)
+		return ref, nil
+	}
+	canonical, err := journal.ArtifactPath(ref.Digest)
+	if err != nil || ref.Path != canonical || ref.Size < 0 || !ref.Integrity.Valid() {
+		return journal.Ref{}, fmt.Errorf("engine: invalid referenced artifact %q", a.Name)
+	}
+	return ref, nil
+}
+
 // projectedArtifactBytes adapts the same projection to internal/gate's
 // ArtifactBytes seam, which resolves an apiv1.ArtifactPointer rather than a
 // journal.Ref — the shape the finding-lifecycle helpers
@@ -141,7 +172,7 @@ func priorRepassCause(rec *runJournal, subjectStage string) (*gate.RepassCause, 
 	if err != nil {
 		return nil, err
 	}
-	return runner.PriorRepassCause(events, subjectStage, resolve)
+	return runsemantics.PriorRepassCause(events, subjectStage, resolve)
 }
 
 // reviewerContextPointers withholds validation evidence the agentic subject
@@ -156,7 +187,7 @@ func reviewerContextPointers(rec *runJournal, m *wf.Machine, subjectStage string
 	if err != nil {
 		return pointers
 	}
-	return runner.ReviewerContextPointers(events, subjectStage, func(stage string) bool {
+	return runsemantics.ReviewerContextPointers(events, subjectStage, func(stage string) bool {
 		task, ok := m.Task(stage)
 		return ok && task.Type == apiv1.TaskDeterministic
 	}, pointers)
@@ -176,7 +207,7 @@ func cachedVerdictFor(subject apiv1.ResultEnvelope, instructionAddendum string) 
 	if instructionAddendum != "" {
 		return nil
 	}
-	return runner.CachedVerdictFromOutputs(subject.Outputs)
+	return runsemantics.CachedVerdictFromOutputs(subject.Outputs)
 }
 
 // learningEpisodeTargetAttemptChange / learningEpisodeTargetAttempt are the
@@ -228,7 +259,7 @@ const (
 // selects BuildLearningEpisode's pre-#3931 fallback — SourceAttempt+1, the
 // arithmetic that history was written with. New runs record the marker and
 // address the correction to the target's own next attempt.
-func learningEpisodeTargetAttemptFor(version workflow.Version, addressing runner.LearningEpisodeAddressing) int {
+func learningEpisodeTargetAttemptFor(version workflow.Version, addressing runsemantics.LearningEpisodeAddressing) int {
 	if version < learningEpisodeTargetAttempt {
 		return 0
 	}
@@ -260,7 +291,7 @@ func (r *runJournal) learningEpisode(
 	if err != nil {
 		return nil, err
 	}
-	addressing := runner.ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, verdict != nil)
+	addressing := runsemantics.ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, verdict != nil)
 	sourceAttempt := addressing.SourceAttempt
 	if sourceAttempt == 0 {
 		sourceAttempt = gr.Attempt
@@ -271,7 +302,7 @@ func (r *runJournal) learningEpisode(
 			workflow.DefaultVersion, learningEpisodeTargetAttempt),
 		addressing,
 	)
-	episode := runner.BuildLearningEpisode(runner.LearningEpisodeInput{
+	episode := runsemantics.BuildLearningEpisode(runsemantics.LearningEpisodeInput{
 		RunID:             in.RunID,
 		Workflow:          in.WorkflowName,
 		WorkflowDigest:    r.proj.Identity.WorkflowDigest,
@@ -293,7 +324,7 @@ func (r *runJournal) learningEpisode(
 		return nil, fmt.Errorf("engine: address learning episode for gate %q: %w", gateName, err)
 	}
 	at := workflow.Now(ctx)
-	name := runner.LearningEpisodeArtifactName(gateName, addressing.SourceSeq)
+	name := runsemantics.LearningEpisodeArtifactName(gateName, addressing.SourceSeq)
 	r.artifactAt(at, JournalArtifactOp{Name: name, Data: data, Integrity: apiv1.IntegrityDerived})
 	r.appendAt(at, journal.Event{
 		Type: journal.EventRunnerAnnotation,
@@ -306,10 +337,10 @@ func (r *runJournal) learningEpisode(
 		Name:      name,
 		Ref:       &ref,
 		Integrity: apiv1.IntegrityDerived,
-		Runner:    runner.LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest),
+		Runner:    runsemantics.LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest),
 	})
 	return &apiv1.ContextPointer{
-		Name:      runner.LearningEpisodePointerName(addressing.SourceSeq),
+		Name:      runsemantics.LearningEpisodePointerName(addressing.SourceSeq),
 		Integrity: apiv1.IntegrityDerived,
 		Artifact: &apiv1.ArtifactPointer{
 			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
@@ -361,7 +392,7 @@ func (r *runJournal) recordSalvage(
 		return nil
 	}
 	_, err := r.stageArtifact(ctx, stage, attempt, class,
-		runner.SalvageOnTimeoutArtifactName(stage), marker, "application/json")
+		runsemantics.SalvageOnTimeoutArtifactName(stage), marker, "application/json")
 	return err
 }
 
@@ -379,7 +410,7 @@ func (r *runJournal) recordBaseSyncConflict(
 		return nil
 	}
 	_, err := r.stageArtifact(ctx, stage, attempt, class,
-		runner.BaseSyncConflictArtifactName(stage), detail, "application/json")
+		runsemantics.BaseSyncConflictArtifactName(stage), detail, "application/json")
 	return err
 }
 
@@ -404,12 +435,12 @@ func (r *runJournal) recordUnpushedDiff(
 		return nil
 	}
 	patch, err := r.stageArtifact(ctx, stage, attempt, class,
-		runner.UnpushedDiffPatchArtifactName(stage), capture.Diff, runner.ReviewerDiffMediaType)
+		runsemantics.UnpushedDiffPatchArtifactName(stage), capture.Diff, runsemantics.ReviewerDiffMediaType)
 	if err != nil {
 		return err
 	}
-	meta := runner.UnpushedDiffMetadata{
-		Schema:    runner.UnpushedDiffSchemaVersion,
+	meta := runsemantics.UnpushedDiffMetadata{
+		Schema:    runsemantics.UnpushedDiffSchemaVersion,
 		RunID:     in.RunID,
 		Workflow:  in.WorkflowName,
 		Stage:     stage,
@@ -426,7 +457,7 @@ func (r *runJournal) recordUnpushedDiff(
 		return fmt.Errorf("engine: encode unpushed-diff metadata for stage %q: %w", stage, err)
 	}
 	_, err = r.stageArtifact(ctx, stage, attempt, class,
-		runner.UnpushedDiffMetaArtifactName(stage), data, "application/json")
+		runsemantics.UnpushedDiffMetaArtifactName(stage), data, "application/json")
 	return err
 }
 
@@ -461,7 +492,7 @@ func (r *runJournal) recordReviewerDiff(
 	if len(diff) == 0 {
 		return nil, nil
 	}
-	name := runner.ReviewerDiffArtifactName(runID, gateName)
+	name := runsemantics.ReviewerDiffArtifactName(runID, gateName)
 	ref, err := journal.ArtifactRef(diff)
 	if err != nil {
 		return nil, fmt.Errorf("engine: address reviewer diff for gate %q: %w", gateName, err)
@@ -471,10 +502,10 @@ func (r *runJournal) recordReviewerDiff(
 	})
 	ptr := &apiv1.ArtifactPointer{
 		Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
-		MediaType: runner.ReviewerDiffMediaType, Integrity: apiv1.IntegrityDerived,
+		MediaType: runsemantics.ReviewerDiffMediaType, Integrity: apiv1.IntegrityDerived,
 	}
 	return &apiv1.ContextPointer{
-		Name: runner.ReviewerDiffPointerName(gateName), Integrity: apiv1.IntegrityDerived, Artifact: ptr,
+		Name: runsemantics.ReviewerDiffPointerName(gateName), Integrity: apiv1.IntegrityDerived, Artifact: ptr,
 	}, nil
 }
 
@@ -501,11 +532,11 @@ func (r *runJournal) remediationEvidenceRequirement(
 	r.append(ctx, journal.Event{
 		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName,
 		Runner: map[string]any{
-			"kind":                            runner.RemediationEvidenceRequiredKind,
+			"kind":                            runsemantics.RemediationEvidenceRequiredKind,
 			"triggeringGate":                  cause.Gate,
 			"triggeringStage":                 cause.Stage,
-			"requiredFailureEvidencePointers": runner.RequiredContextPointerNames(required),
-			"actionableEvidence": runner.RemediationEvidenceRequirements(
+			"requiredFailureEvidencePointers": runsemantics.RequiredContextPointerNames(required),
+			"actionableEvidence": runsemantics.RemediationEvidenceRequirements(
 				required, projectedArtifactBytes(resolve),
 			),
 		},
@@ -561,9 +592,9 @@ type gateEvidence struct {
 // exactly as on the local runner.
 func gateRequiresDiff(m *wf.Machine, g apiv1.Gate, subjectStage string) bool {
 	if writableWorkspace(g.EffectiveWorkspace()) {
-		return runner.RequiresReviewerDiff(m, g.Name, subjectStage)
+		return runsemantics.RequiresReviewerDiff(m, g.Name, subjectStage)
 	}
-	return runner.ReviewsImplementation(m, g.Name)
+	return runsemantics.ReviewsImplementation(m, g.Name)
 }
 
 // collectGateEvidence gathers the above. A free function over the walk's state
@@ -611,7 +642,7 @@ func collectGateEvidence(
 	// runner journals it, so it survives a crash: an obligation held only in
 	// memory would be silently dropped by a replay on another worker, and the
 	// receipt check on the far side would then have nothing to check against.
-	required := runner.RemediationFailureEvidencePointers(cause, pointers)
+	required := runsemantics.RemediationFailureEvidencePointers(cause, pointers)
 	if len(required) > 0 {
 		if err := rec.remediationEvidenceRequirement(ctx, subjectStage, g.Name, cause, required); err != nil {
 			return gateEvidence{}, err
@@ -773,12 +804,12 @@ type findingLifecycle struct {
 // answer is the blocked one.
 func contextNotInspectedRedispatch(t apiv1.Task, result apiv1.ResultEnvelope, rejected map[string]int) (bool, string) {
 	if result.Status != apiv1.ResultBlocked || result.Error == nil ||
-		result.Error.Code != runner.ContextNotInspectedCode {
+		result.Error.Code != runsemantics.ContextNotInspectedCode {
 		return false, ""
 	}
 	if rejected[t.Name] >= 1 {
 		return false, ""
 	}
 	rejected[t.Name]++
-	return true, runner.ContextNotInspectedAddendum(result.Error.Message)
+	return true, runsemantics.ContextNotInspectedAddendum(result.Error.Message)
 }

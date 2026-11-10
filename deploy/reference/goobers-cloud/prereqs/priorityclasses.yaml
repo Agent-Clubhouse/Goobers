@@ -1,0 +1,19 @@
+# Design §14.2: control-plane components outrank stage pods, and stage pods
+# can never preempt anything. Cluster-scoped, so kustomize leaves them out of
+# the namespace transformer.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: goobers-control-plane
+value: 100000
+globalDefault: false
+description: Goobers control plane (control, workers, Temporal, migrate).
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: goobers-stage
+value: 1000
+preemptionPolicy: Never
+globalDefault: false
+description: Goobers stage pods; never preempts.

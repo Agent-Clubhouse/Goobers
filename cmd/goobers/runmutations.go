@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -17,6 +18,8 @@ import (
 )
 
 const maxInterventionResponseBody = 1 << 20
+
+const interventionClientTimeout = apicontract.InterventionBudget + 5*time.Second
 
 const approveHelp = "Usage: goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]\n\n" +
 	"Approve a paused human gate or an escalated human/reviewer gate. The daemon\n" +
@@ -103,6 +106,31 @@ func runRerunStage(args []string, stdout, stderr io.Writer) int {
 	return runInterventionCLI(
 		fs, apicontract.RouteRerunStage, "rerun-stage", *api,
 		httpapi.InterventionRequest{Actor: *actor, InstructionAddendum: *addendum},
+		stdout, stderr,
+	)
+}
+
+const retryStageHelp = "Usage: goobers retry-stage [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]\n\n" +
+	"Retry one previously-run deterministic task on an escalated run without\n" +
+	"replaying earlier stages or supplying agent instructions. The actor, target,\n" +
+	"terminal generation, and retry attempt are recorded in the run journal.\n" +
+	"GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and\n" +
+	"--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this\n" +
+	"filesystem, such as one running in another pod.\n\n" +
+	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
+
+func runRetryStage(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("retry-stage", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, "retry-stage")
+	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	return runInterventionCLI(
+		fs, apicontract.RouteRetryStage, "retry-stage", *api,
+		httpapi.InterventionRequest{Actor: *actor},
 		stdout, stderr,
 	)
 }
@@ -247,12 +275,25 @@ func callDaemonMutationAPIWithKeyContext[Req, Resp any](
 		IdempotencyKey:  key,
 		Input:           input,
 		MaxResponseBody: maxInterventionResponseBody,
-		ClientTimeout:   remoteTriggerTimeout,
+		ClientTimeout:   daemonMutationClientTimeout(routeID),
 		EncodePrefix:    fmt.Sprintf("encode %s request", routeID),
 		BuildPrefix:     fmt.Sprintf("build %s request", routeID),
 		CallPrefix:      "call live daemon API",
 		DecodePrefix:    fmt.Sprintf("decode daemon %s result", routeID),
 	})
+}
+
+func daemonMutationClientTimeout(routeID apicontract.RouteID) time.Duration {
+	switch routeID {
+	case apicontract.RouteApproveStage,
+		apicontract.RouteOverrideStage,
+		apicontract.RouteRerunStage,
+		apicontract.RouteRetryStage,
+		apicontract.RouteResolveEscalation:
+		return interventionClientTimeout
+	default:
+		return remoteTriggerTimeout
+	}
 }
 
 func newInterventionIdempotencyKey() (string, error) {

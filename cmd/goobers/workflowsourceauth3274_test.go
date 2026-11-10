@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // These tests pin the composition-root half of #3274: internal/instance owns
@@ -30,7 +31,7 @@ func workflowSourceAppAuthFixture() instance.WorkflowSource {
 }
 
 func TestNewWorkflowSourceAppTokenSourceBuildsMinter(t *testing.T) {
-	tokens, err := newWorkflowSourceAppTokenSource(workflowSourceAppAuthFixture(), nil, nil)
+	tokens, err := runtimewiring.NewWorkflowSourceAppTokenSource(workflowSourceAppAuthFixture(), nil, nil)
 	if err != nil {
 		t.Fatalf("newWorkflowSourceAppTokenSource: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestNewWorkflowSourceAppTokenSourceRejectsNonAppSource(t *testing.T) {
 	source := workflowSourceAppAuthFixture()
 	source.Auth = nil
 	source.Token = &instance.TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"}
-	if _, err := newWorkflowSourceAppTokenSource(source, nil, nil); err == nil ||
+	if _, err := runtimewiring.NewWorkflowSourceAppTokenSource(source, nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "does not use github-app auth") {
 		t.Fatalf("error = %v, want non-app-source rejection", err)
 	}
@@ -55,7 +56,7 @@ func TestNewWorkflowSourceAppTokenSourceRejectsNonAppSource(t *testing.T) {
 func TestNewWorkflowSourceAppTokenSourceFailsClosedOnStoreBackedKeyWithoutStores(t *testing.T) {
 	source := workflowSourceAppAuthFixture()
 	source.Auth.PrivateKey = &instance.TokenRef{Store: "prod-kv/app-key"}
-	if _, err := newWorkflowSourceAppTokenSource(source, nil, nil); err == nil ||
+	if _, err := runtimewiring.NewWorkflowSourceAppTokenSource(source, nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "no secret store resolver is configured") {
 		t.Fatalf("error = %v, want fail-closed store-resolver error", err)
 	}
@@ -80,7 +81,7 @@ func TestWorkflowSourceRepositoryName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {
-			got, err := workflowSourceRepositoryName(tt.url)
+			got, err := runtimewiring.WorkflowSourceRepositoryName(tt.url)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("workflowSourceRepositoryName(%q) = %q, want error", tt.url, got)

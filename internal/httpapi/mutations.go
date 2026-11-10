@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -26,6 +27,7 @@ type InterventionRequest struct {
 	Decision            string `json:"decision,omitempty"`
 	Rationale           string `json:"rationale,omitempty"`
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
+	DeterministicRetry  bool   `json:"-"`
 }
 
 // InterventionResult reports the durable run position after an action.
@@ -69,10 +71,20 @@ func registerMutationRoutes(router *Router, interventions InterventionService, l
 	router.Handle(apicontract.RouteApproveStage, stageMutationHandler("approve", interventions, lifecycle, errorLog))
 	router.Handle(apicontract.RouteOverrideStage, stageMutationHandler("override", interventions, lifecycle, errorLog))
 	router.Handle(apicontract.RouteRerunStage, stageMutationHandler("rerun", interventions, lifecycle, errorLog))
+	router.Handle(apicontract.RouteRetryStage, stageMutationHandler("retry", interventions, lifecycle, errorLog))
 }
 
 func stageMutationHandler(action string, interventions InterventionService, lifecycle context.Context, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
+		// An intervention must answer even when a collaborator panics. This
+		// boundary cannot promise rollback: the idempotency key and journal
+		// remain authoritative when the operator retries after an error.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				errorLog.Printf("%s run intervention panicked: %v\n%s", action, recovered, debug.Stack())
+				writeError(w, http.StatusInternalServerError, "intervention_failed", "run intervention failed; inspect the run journal before retrying with the same Idempotency-Key")
+			}
+		}()
 		if interventions == nil {
 			writeError(w, http.StatusServiceUnavailable, "interventions_unavailable", "run interventions are not available from this server")
 			return
@@ -98,6 +110,7 @@ func stageMutationHandler(action string, interventions InterventionService, life
 			return
 		}
 		input.IdempotencyKey = key
+		input.DeterministicRetry = action == "retry"
 		var result InterventionResult
 		switch action {
 		case "approve":
@@ -105,6 +118,8 @@ func stageMutationHandler(action string, interventions InterventionService, life
 		case "override":
 			result, err = interventions.AcceptOverride(request.Context(), lifecycle, input)
 		case "rerun":
+			result, err = interventions.AcceptRerunStage(request.Context(), lifecycle, input)
+		case "retry":
 			result, err = interventions.AcceptRerunStage(request.Context(), lifecycle, input)
 		default:
 			panic("unknown intervention action " + action)

@@ -306,3 +306,21 @@ func goModGoDirective(t *testing.T) string {
 	t.Fatalf("no `go` directive found in %s", path)
 	return ""
 }
+
+func TestOldestSupported(t *testing.T) {
+	matrix := SupportMatrix{
+		"1.4":  {Level: LevelUnsupported},
+		"2.0":  {Level: LevelDeprecated},
+		"3.0":  {Level: LevelSupported},
+		"3.1":  {Level: LevelPreview},
+		"10.0": {Level: LevelSupported},
+	}
+	if got, ok := matrix.OldestSupported(); !ok || got != "3.0" {
+		t.Fatalf("OldestSupported() = %q, %v, want 3.0, true", got, ok)
+	}
+	delete(matrix, "3.0")
+	delete(matrix, "10.0")
+	if got, ok := matrix.OldestSupported(); ok || got != "" {
+		t.Fatalf("OldestSupported() = %q, %v, want empty, false", got, ok)
+	}
+}

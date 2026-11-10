@@ -29,20 +29,17 @@ func freezeMapRoster(ctx context.Context, journalDir string, events []journal.Ev
 	if err != nil {
 		return journal.Event{}, err
 	}
-	items, err := fanout.FreezeRoster(data, source.MediaType)
+	blob, _, digest, err := fanout.FreezeRosterBlob(m, source, data)
 	if err != nil {
 		return journal.Event{}, err
 	}
+	roster := blob.Roster
+	roster.Source = source
+	roster.RosterDigest = digest
 	return journal.Event{
-		Type:     journal.EventMapStarted,
-		Parallel: m.Name,
-		MapRoster: &journal.MapRoster{
-			Source:             source,
-			FailurePolicy:      m.FailurePolicy,
-			ItemTimeoutSeconds: m.ItemTimeoutSeconds,
-			MaxConcurrent:      fanout.EffectiveMaxConcurrent(m),
-			Items:              items,
-		},
+		Type:      journal.EventMapStarted,
+		Parallel:  m.Name,
+		MapRoster: &roster,
 	}, nil
 }
 

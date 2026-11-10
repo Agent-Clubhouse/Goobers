@@ -34,6 +34,7 @@ import (
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/startuphint"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const (
@@ -825,14 +826,18 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	streamOpts := []httpapi.HandlerOption{
 		httpapi.WithTelemetryReadAvailability(telemetry != nil),
 		httpapi.WithTrustedProxies(config.API.TrustedProxies),
+		// Same read-only Labs source `goobers up` wires (#8309).
+		httpapi.WithLabsWorkflowClusters(workflowcluster.ConfiguredSource{Root: layout.Root}),
 	}
+	streamOpts = append(streamOpts, labsWorkflowFeaturesOptions(layout.Root, errorLog.Writer())...)
+	streamOpts = append(streamOpts, labsFluidUIOptions(layout)...)
 	if identity := daemonDiscoveryIdentity(layout.Root); identity.DaemonInstanceID != "" {
 		streamOpts = append(streamOpts, httpapi.WithDiscoveryIdentity(identity))
 	} else {
 		errorLog.Printf("dashboard API discovery unavailable: root has no readable durable identity; inspection does not adopt it")
 	}
 	if readStore != nil {
-		streamOpts = append(streamOpts, httpapi.WithChangeFeedStream(readStore))
+		streamOpts = append(streamOpts, httpapi.WithChangeFeedStream(readStore, readStore.Feed()))
 	}
 	if loopback {
 		// The reveal action shells out on this process's own machine (#2306);

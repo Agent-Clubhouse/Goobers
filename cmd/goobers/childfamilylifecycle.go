@@ -12,7 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -51,7 +51,7 @@ func (f *childFamilyLifecycle) Fence(ctx context.Context, input httpapi.CancelRu
 		return err
 	}
 	if !known {
-		machine, err := runner.PinnedWorkflowMachine(rd, id)
+		machine, err := runsemantics.PinnedWorkflowMachine(rd, id)
 		if err != nil {
 			// Legacy runs with no pinned definition cannot issue child authority.
 			return nil

@@ -1,0 +1,27 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW GYM PROMOTION VALIDATE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow-gym promotion-validate \- validate promotion evidence for Workflow CD
+.SH SYNOPSIS
+\fBgoobers workflow-gym promotion-validate\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow-gym promotion-validate <evidence> <policy>
+
+Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current
+WorkflowGymPromotionPolicy. Each benchmark, shadow, or holdout slot names its
+stage, an evaluate JSON report path (relative to the evidence file), and that
+report's canonical artifactDigest; verdicts and samples come from the report.
+Validation is read-only and writes a WorkflowGymPromotionValidation receipt
+with verdict, reasons, and digests to stdout, on rejection as well as success.
+
+Exit codes: 0 = pass, 1 = fail (regressed, mismatched, stale, or reused
+evidence), 2 = usage error, 3 = inconclusive (missing required evidence or too
+few samples), 4 = input error (unreadable or malformed evidence, policy, or report).
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow-gym promotion-validate ./evidence.yaml ./policy.yaml
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

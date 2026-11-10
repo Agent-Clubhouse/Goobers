@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
+	"os"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -84,7 +86,12 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 		return 2
 	}
 	defer func() { _ = db.Close() }()
-	report, err := db.MergeProvenance(context.Background(), rollup.MergeReportQuery{Since: since, Until: until, InstanceID: *instanceID, Gaggle: *gaggle, RepositoryAPIURL: *repository})
+	instanceIDs, err := telemetryMergeInstanceIDs(root, *instanceID)
+	if err != nil {
+		pf(stderr, "error: resolve --instance-id: %v\n", err)
+		return 2
+	}
+	report, err := db.MergeProvenance(context.Background(), rollup.MergeReportQuery{Since: since, Until: until, InstanceID: *instanceID, InstanceIDs: instanceIDs, Gaggle: *gaggle, RepositoryAPIURL: *repository})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -108,6 +115,27 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 		return 2
 	}
 	return 0
+}
+
+func telemetryMergeInstanceIDs(root, requested string) ([]string, error) {
+	if requested == "" {
+		return nil, nil
+	}
+	canonical, err := instance.ResolveRootIdentity(root, requested)
+	if errors.Is(err, instance.ErrRootIdentityNotRecognized) || errors.Is(err, os.ErrNotExist) {
+		return []string{requested}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	aliases, err := instance.ReadRootIdentityAliases(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{canonical}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{canonical}, aliases...), nil
 }
 
 func writeMergeReport(output io.Writer, report rollup.MergeReport) error {

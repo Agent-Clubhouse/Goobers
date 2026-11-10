@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -93,7 +95,7 @@ func seedCrashOrphanWorktree(t *testing.T, root, repoURL, runID string) {
 // route reports Ready=true.
 func TestReadinessGateBlocksVersionedRoutesDuringCrashOrphanRecovery(t *testing.T) {
 	root := initDeterministicDemo(t)
-	repoURL, err := repoCloneURL(apiv1.RepoRef{})
+	repoURL, err := runtimewiring.RepoCloneURL(apiv1.RepoRef{})
 	if err != nil {
 		t.Fatalf("repoCloneURL: %v", err)
 	}

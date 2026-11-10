@@ -14,6 +14,7 @@ import (
 
 type progressReporterKey struct{}
 type agentUsageReporterKey struct{}
+type agentUsageStreamKey struct{}
 
 // WithProgressReporter attaches the runner's coalesced stage-progress signal
 // to an invocation context.
@@ -48,6 +49,23 @@ func ReportAgentUsage(ctx context.Context, metrics map[string]float64) {
 	if report, ok := ctx.Value(agentUsageReporterKey{}).(func(map[string]float64)); ok {
 		report(metrics)
 	}
+}
+
+// WithAgentUsageStream attaches the pod supervisor's incremental usage
+// observer. Local runner, engine and child paths deliberately do not install
+// it, preserving their final-report-only accounting contract.
+func WithAgentUsageStream(ctx context.Context, report func(map[string]float64)) context.Context {
+	if report == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, agentUsageStreamKey{}, report)
+}
+
+// AgentUsageStream returns the incremental observer, or nil outside a pod
+// supervisor.
+func AgentUsageStream(ctx context.Context) func(map[string]float64) {
+	report, _ := ctx.Value(agentUsageStreamKey{}).(func(map[string]float64))
+	return report
 }
 
 // Goober is the boundary the runtime implements to execute agentic work. The

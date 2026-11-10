@@ -74,21 +74,23 @@ type StageRecordSet struct {
 // run's outcome is known, so they carry the outcome gap's uncertainty. The
 // end-of-run record, not a checkpoint, is authoritative.
 type StageRecord struct {
-	Stage           string                    `json:"stage"`
-	Attempt         int                       `json:"attempt"`
-	Branch          int                       `json:"branch,omitempty"`
-	Status          string                    `json:"status,omitempty"`
-	FromSequence    uint64                    `json:"fromSequence"`
-	ThroughSequence uint64                    `json:"throughSequence"`
-	EventCount      int                       `json:"eventCount"`
-	SegmentDigest   string                    `json:"segmentDigest"`
-	Inputs          []StageRef                `json:"inputs,omitempty"`
-	Outputs         map[string]any            `json:"outputs,omitempty"`
-	Artifacts       []StageRef                `json:"artifacts,omitempty"`
-	Verdicts        []StageGateVerdict        `json:"verdicts,omitempty"`
-	Contributions   []Contribution            `json:"contributions,omitempty"`
-	Causes          []CauseFinding            `json:"causes,omitempty"`
-	Evidence        []AttributionEvidenceLink `json:"evidence,omitempty"`
+	Stage                   string                    `json:"stage"`
+	Attempt                 int                       `json:"attempt"`
+	Branch                  int                       `json:"branch,omitempty"`
+	Status                  string                    `json:"status,omitempty"`
+	FromSequence            uint64                    `json:"fromSequence"`
+	ThroughSequence         uint64                    `json:"throughSequence"`
+	EventCount              int                       `json:"eventCount"`
+	SegmentDigest           string                    `json:"segmentDigest"`
+	Inputs                  []StageRef                `json:"inputs,omitempty"`
+	Outputs                 map[string]any            `json:"outputs,omitempty"`
+	Artifacts               []StageRef                `json:"artifacts,omitempty"`
+	Verdicts                []StageGateVerdict        `json:"verdicts,omitempty"`
+	Contributions           []Contribution            `json:"contributions,omitempty"`
+	Causes                  []CauseFinding            `json:"causes,omitempty"`
+	Evidence                []AttributionEvidenceLink `json:"evidence,omitempty"`
+	Verifications           []VerificationRecord      `json:"verifications,omitempty"`
+	UnverifiedVerifications []VerificationRecord      `json:"unverifiedVerifications,omitempty"`
 	// RecordDigest is the content digest of the record itself (with this
 	// field empty), so an edited checkpoint is refused rather than shown.
 	RecordDigest string `json:"recordDigest"`
@@ -363,6 +365,16 @@ func stageRecord(run loadedRun, start, end int) (StageRecord, error) {
 	}
 	attribution := Attribute(graph)
 	attempt := max(finished.Attempt, 1)
+	for _, verification := range attribution.Verifications {
+		if verification.Stage == finished.Stage && verification.Attempt == attempt && verification.Branch == finished.Branch {
+			record.Verifications = append(record.Verifications, verification)
+		}
+	}
+	for _, verification := range attribution.UnverifiedVerifications {
+		if verification.Stage == finished.Stage && verification.Attempt == attempt && verification.Branch == finished.Branch {
+			record.UnverifiedVerifications = append(record.UnverifiedVerifications, verification)
+		}
+	}
 	for _, contribution := range attribution.Contributions {
 		if contribution.Stage == finished.Stage && max(contribution.Attempt, 1) == attempt {
 			record.Contributions = append(record.Contributions, contribution)
@@ -435,6 +447,7 @@ func stageRecordDigest(record StageRecord) string {
 // match those re-derived from its segment.
 func sameStageFacts(record, derived StageRecord) bool {
 	derived.Contributions, derived.Causes, derived.Evidence = record.Contributions, record.Causes, record.Evidence
+	derived.Verifications, derived.UnverifiedVerifications = record.Verifications, record.UnverifiedVerifications
 	derived.RecordDigest = record.RecordDigest
 	return stageRecordDigest(derived) == stageRecordDigest(record)
 }

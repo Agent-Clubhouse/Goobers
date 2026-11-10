@@ -83,7 +83,7 @@ func TestGoobersIOAdapterRegistrationContracts(t *testing.T) {
 					"args = " + tomlStringArray(args) + "\n" +
 					"enabled = true\nrequired = true\n" +
 					"OVERRIDES\n" +
-					strings.Join(appendCodexStdioOverrides(nil, goobersIOServerName, selfBin, args, nil, nil), "\n")
+					strings.Join(appendCodexStdioOverrides(nil, goobersIOServerName, selfBin, args, nil, nil, true), "\n")
 			},
 		},
 	}

@@ -75,6 +75,12 @@ print build version, commit, and date (--json for structured output)
 \fBgoobers workflow\fR
 inspect workflows and validate child proposals
 .TP
+\fBgoobers workflow child-admission\fR
+Labs: review children held for human admission approval
+.TP
+\fBgoobers workflow clusters\fR
+Labs: cluster workflows by structural shape or run behavior
+.TP
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
 .TP
@@ -190,15 +196,6 @@ perform one live S6 kill-matrix cell (pod-kill) against a real cluster
 \fBgoobers e2e verify\fR
 verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
 .TP
-\fBgoobers engine-project\fR
-write a completed engine run's journal into the instance (experimental)
-.TP
-\fBgoobers engine-queues\fR
-report which workers poll this instance's engine and dispatch task queues (experimental)
-.TP
-\fBgoobers engine-start\fR
-dispatch one run onto the tier-3 engine via Temporal (experimental)
-.TP
 \fBgoobers escalations resolve\fR
 resolve an escalated run through the daemon's HITL plane
 .TP
@@ -265,6 +262,15 @@ the one sanctioned edit to the append-only journal
 \fBgoobers journal redact\fR
 remove a leaked secret from a stored blob (SEC-041)
 .TP
+\fBgoobers labs\fR
+Labs: experimental, advisory reports
+.TP
+\fBgoobers labs fluid-ui\fR
+Labs: Fluid UI customization reports
+.TP
+\fBgoobers labs fluid-ui report\fR
+Labs: rank Fluid UI customization shapes as advisory promotion candidates
+.TP
 \fBgoobers lint\fR
 lint config via the single authoritative validation engine (alias for validate)
 .TP
@@ -318,6 +324,9 @@ rerun a stage with a recorded instruction addendum
 .TP
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
+.TP
+\fBgoobers retry-stage\fR
+retry a previously-run deterministic task
 .TP
 \fBgoobers roots\fR
 inspect and manage instance roots
@@ -418,6 +427,9 @@ recent errors across runs, by class, with run/stage refs
 \fBgoobers telemetry export\fR
 re-emit a span-start-time window from journaled OTLP/JSON
 .TP
+\fBgoobers telemetry gaggle\fR
+report gaggle-wide Backprop credit, recurring findings, trends, and links
+.TP
 \fBgoobers telemetry label\fR
 record a ground-truth verdict for a Backprop-enrolled run
 .TP
@@ -454,8 +466,26 @@ print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured
 \fBgoobers work-items\fR
 list pull requests and issues changed by Goobers
 .TP
-\fBgoobers worker\fR
-host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
+\fBgoobers workflow-gym\fR
+validate, replay, compare, evaluate, or hand off Workflow Gym evidence
+.TP
+\fBgoobers workflow-gym evaluate\fR
+gate and rank paired tournament results
+.TP
+\fBgoobers workflow-gym list\fR
+list a file-backed benchmark dataset
+.TP
+\fBgoobers workflow-gym promotion-validate\fR
+validate promotion evidence for Workflow CD
+.TP
+\fBgoobers workflow-gym replay\fR
+replay a historical benchmark task offline
+.TP
+\fBgoobers workflow-gym tournament\fR
+compare candidates over an identical benchmark task suite
+.TP
+\fBgoobers workflow-gym validate\fR
+validate a file-backed benchmark dataset
 .TP
 \fBgoobers workspace\fR
 explicitly recover pinned repository workspaces
@@ -497,6 +527,9 @@ route a PR to remediation if its linked issue changed since implementation began
 \fBgoobers config-checkout\fR
 clone the instance config repository for a config-repo-targeted stage (a workflow stage)
 .TP
+\fBgoobers decide\fR
+ask the decision model a thresholded yes/no question (a workflow stage)
+.TP
 \fBgoobers docs-churn\fR
 emit the docs-drift churn digest since the watermark (a connector stage)
 .TP
@@ -505,6 +538,9 @@ elect the landing PR among a merge-review cohort (a workflow stage)
 .TP
 \fBgoobers file-issues\fR
 file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+.TP
+\fBgoobers fluid-ui-request\fR
+load a Labs Fluid UI request or validate its customization candidate (a workflow stage)
 .TP
 \fBgoobers gate-removal-guard\fR
 block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
@@ -658,6 +694,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),
 \fBgoobers-dashboard\fR(1),
+\fBgoobers-decide\fR(1),
 \fBgoobers-diagnostics\fR(1),
 \fBgoobers-diagnostics-bundle\fR(1),
 \fBgoobers-diagnostics-triage\fR(1),
@@ -668,9 +705,6 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-e2e-kill-inject\fR(1),
 \fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
-\fBgoobers-engine-project\fR(1),
-\fBgoobers-engine-queues\fR(1),
-\fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-resolve\fR(1),
 \fBgoobers-escalations-show\fR(1),
@@ -685,6 +719,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-fleet-join\fR(1),
 \fBgoobers-fleet-leave\fR(1),
 \fBgoobers-fleet-status\fR(1),
+\fBgoobers-fluid-ui-request\fR(1),
 \fBgoobers-gaggle\fR(1),
 \fBgoobers-gaggle-export\fR(1),
 \fBgoobers-gaggle-import\fR(1),
@@ -707,6 +742,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-issue-close-out\fR(1),
 \fBgoobers-journal\fR(1),
 \fBgoobers-journal-redact\fR(1),
+\fBgoobers-labs\fR(1),
+\fBgoobers-labs-fluid-ui\fR(1),
+\fBgoobers-labs-fluid-ui-report\fR(1),
 \fBgoobers-lint\fR(1),
 \fBgoobers-mcp-io\fR(1),
 \fBgoobers-merge-pr\fR(1),
@@ -746,6 +784,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-reset-rate-limit\fR(1),
 \fBgoobers-resolve-review-threads\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
+\fBgoobers-retry-stage\fR(1),
 \fBgoobers-roots\fR(1),
 \fBgoobers-roots-decommission\fR(1),
 \fBgoobers-roots-discover\fR(1),
@@ -788,6 +827,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-telemetry-configure\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
+\fBgoobers-telemetry-gaggle\fR(1),
 \fBgoobers-telemetry-label\fR(1),
 \fBgoobers-telemetry-mark-fix\fR(1),
 \fBgoobers-telemetry-merges\fR(1),
@@ -807,9 +847,17 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-version\fR(1),
 \fBgoobers-versions\fR(1),
 \fBgoobers-work-items\fR(1),
-\fBgoobers-worker\fR(1),
 \fBgoobers-workflow\fR(1),
+\fBgoobers-workflow-child-admission\fR(1),
+\fBgoobers-workflow-clusters\fR(1),
 \fBgoobers-workflow-show\fR(1),
 \fBgoobers-workflow-validate-child\fR(1),
+\fBgoobers-workflow-gym\fR(1),
+\fBgoobers-workflow-gym-evaluate\fR(1),
+\fBgoobers-workflow-gym-list\fR(1),
+\fBgoobers-workflow-gym-promotion-validate\fR(1),
+\fBgoobers-workflow-gym-replay\fR(1),
+\fBgoobers-workflow-gym-tournament\fR(1),
+\fBgoobers-workflow-gym-validate\fR(1),
 \fBgoobers-workspace\fR(1),
 \fBgoobers-workspace-reset\fR(1)

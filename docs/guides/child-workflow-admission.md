@@ -1,11 +1,18 @@
 # Child workflow admission internals (preview)
 
-Child execution is not enabled by this slice. Public runner and engine entry
-points still refuse workflows containing opted-in child stages. Offline
-`goobers workflow validate-child` remains the usable authoring preview.
-The internal services described here establish admission, workspace custody and
-wait coordination. A qualified isolated execution backend is still required
-before an executing parent can submit, wait for, or reconcile a child publicly.
+The preview [trusted-local provider](trusted-local-child-workflows.md) supplies
+host-process children for self-only macOS/Linux instances. Its credential ceiling
+and workspace custody contract match contained execution; its trust boundary is
+the daemon user's OS account. It requires the existing workflow preview annotation.
+Windows strict custody remains refused.
+
+The historical slices below describe admission, workspace custody and wait
+coordination at their landing points. Their original execution restrictions are
+not current availability claims: see the trusted-local guide and
+[contained child transport guide](contained-child-transport.md) for the composed
+daemon providers and their qualification limits. Standalone or incompletely
+composed runners remain refused. Offline `goobers workflow validate-child`
+provides advisory validation; it does not grant execution authority.
 
 ## Authority and receipt ownership
 
@@ -77,18 +84,19 @@ continuation. Durable wait time is excluded from the ordinary run-duration limit
 explicit caller cancellation and deadlines still apply. Restart recovery adopts
 the retained checkout and refuses malformed or mismatched wait records.
 
-These owners do not enable a public execution path yet. The installed launcher
-requires an isolated stage backend and defers when one is unavailable. The local
-host process path refuses child execution before credentials or environment are
-materialized. Without delegated publication, the credential ceiling allows only
-an explicitly delegated model credential; opaque repository/provider and named
-MCP tokens are withheld. Filtering a capability label cannot narrow a token's
-actual permissions or isolate stored CLI logins.
+These owners originally supplied internal foundations without enabling public
+execution. The composed daemon now selects the contained or trusted-local
+provider from instance policy. Trusted-local children may use only the parent
+stage's exact selected model grant/reference or its permitted selected harness
+login; they cannot resolve other stored secrets. Unselected provider and MCP
+tokens remain withheld. Filtering a capability label cannot narrow a token's
+actual permissions or isolate a shared OS account.
 
-The current internal handoff is serial and requires a managed repository workspace.
-Parallel parent stages, parent pod waits, and the supported contained executor need
-separate qualification before runtime enablement. Admission's separate per-stage
-slots do not imply that these execution shapes already work. The disposition
+The original internal handoff was serial and required a managed repository
+workspace. Later parallel-parent and contained-executor qualification is recorded
+in the transport guide; trusted-local physical child invocations remain serialized
+by default. Admission's separate per-stage slots alone do not qualify an execution
+shape. The disposition
 follow-up below releases completed child slots only after a verified parent
 choice. No recursion is enabled.
 
@@ -130,18 +138,38 @@ children; exhausted capacity continues to refuse new intake. A family tombstone
 releases its associated history, while unresolved plans retain their evidence.
 Back up before upgrading; older binaries refuse the newer schema.
 
-This remains internal runtime preparation. Public execution stays disabled until
-an isolated backend and its supported parent/child execution shape are qualified.
-The tool and local disposition do not implement delegated PR publication.
+This disposition slice supplied internal runtime preparation; the composed
+providers now use it under their execution and custody gates. The tool and local
+disposition alone do not implement delegated PR publication.
 
 ## Contained worker authority and recovery
 
 Daemon startup connects the retained child launcher to the existing Temporal
 worker transport when a shared pod signing key, Temporal client, surrender store
 and live journal writer are available. Missing dependencies leave accepted work
-queued. The backend requires pinned Linux image runner placement; it never
-substitutes an executor on the daemon host. Public opt-in remains gated pending
-the complete supported parent/child journey below.
+queued. The contained backend requires pinned Linux image runner placement and
+does not fall back to host execution. The trusted-local provider is selected
+separately by self-only instance configuration, with the existing workflow preview
+annotation and no additional flag. Its supported journey and platform limits are
+recorded in the trusted-local guide; the sections below cover contained execution.
+
+Windows trusted-local child execution remains **unqualified preview**. Strict
+workspace custody is refused: an empty Job Object proves only Job membership,
+not that every process able to write the workspace has stopped. Known escapes
+include `Win32_Process.Create` through WMI, the WSL broker, and launches through
+COM or services; their processes need not join the caller's Job. Disabling
+breakaway before resuming the root does not close these brokered paths.
+
+`StopAndWait` retains the exact non-breakaway Job until its active-process count
+reaches zero, then returns the distinct `ErrQuiescenceJobMembershipOnly` result,
+including on repeated calls. Strict invocation proof rejects this result and
+refuses snapshot capture and handoff acknowledgement. Missing custody,
+accounting errors and timeout instead return `ErrQuiescenceUnobservable`.
+A cross-GOOS build qualifies compilation only; the Windows runtime test checks
+Job membership, not strict custody. No unqualified-preview opt-in is supplied
+by this primitive, so Windows strict execution remains refused. Any future
+preview override must be explicit about accepting these escapes; ordinary
+local-mode selection cannot authorize it. This does not activate the backend.
 
 Each physical attempt receives a separately signed generated-child identity
 bound to its run and immutable execution contract. Its dedicated HTTP owners
@@ -168,6 +196,35 @@ Signed HTTP tests cover factory dispatch, credentials, execution monitoring,
 artifact transport, journal observations, surrender and recovery after a lost
 reply. They use an in-process worker transport; they do not certify a live
 Kubernetes/Temporal deployment or delegated PR publication.
+
+## Engine child admission on the cloud control plane
+
+On the cloud, the engine worker reaches generated-child custody through the
+`goobers-cloud control` role's child-admission plane (see
+[worker transport](../design/worker-blob-transport.md#engine-child-admission-authentication)).
+The plane is composed after the applied configuration and needs the object store
+(`--object-store-url`, `--object-store-container`). Without either, the control
+role refuses to start rather than serve a partial plane.
+
+Each call binds to the controller lease this replica holds at that moment. A
+standby, or a replica mid-failover, answers 503 and the engine retries
+elsewhere. Freezing a child into its manifest loads the config generation its
+parent was accepted under (`envelope.ConfigGeneration`) from the object store.
+It never uses the currently applied generation. It checks the parent's
+generation, workflow and goober digests and the child's effective policy
+against what was accepted. A changed policy refuses the child, a narrowing
+included. A control-plane reload of runner or harness settings does not.
+
+**Troubleshooting a misrouted worker.** 404 and 405 are retryable, because an
+API replica that does not serve the route yet answers that way during a rolling
+deploy. So a worker pointed at the wrong API URL does not fail on its first
+call. It surfaces as `childadmissionclient: … refused with status 404` only
+after the child activity's five-minute schedule-to-close budget, plus up to
+another five minutes while the engine's cleanup cancel retries the same way.
+If a child admission hangs and then fails with 404 or 405, check:
+- the worker's plane URL, the daemon API endpoint it was started with;
+- that every API replica runs a build that serves
+  `/api/v1/engine/children/{admit,load,cancel}`.
 
 ## Remaining delivery gates
 
@@ -201,3 +258,23 @@ no recovery link. Child run details may independently have been retained or prun
 The view refreshes on gaggle run invalidations and offers explicit refresh; it
 shows the observation time and uses the Portal's existing stale-data indication.
 This read surface does not enable public child execution or new interventions.
+
+## Human admission review for novel children (Labs)
+
+When a cluster model is configured, validation, start and status responses
+carry advisory novelty evidence. A missing or stale model leaves the proposal
+unscored and admission unchanged. With the parent's
+`childWorkflows.requireHumanApprovalForOutOfDistribution` policy enabled, an
+out-of-distribution child is accepted with a durable admission hold that pins
+its novelty evidence. A held child is not dispatched until an operator decides
+with `goobers workflow child-admission --approve <child-id>` or
+`--reject <child-id>`. Approval is journaled in the child's lineage; rejection
+settles the child as a failed result the parent observes. An exact retry with
+the same invocation key returns the original receipt and its pinned evidence,
+even if the model changed in between. Queues that cannot retain a hold, such as
+cloud acceptance, refuse the start instead.
+
+The decision actor defaults to `GITHUB_ACTOR`, `USER` or `USERNAME`, then the
+OS account, and can be overridden with `--actor`. In trusted-local mode it is
+self-asserted: anyone who can open the instance's local queue can decide, and
+the actor is recorded for audit rather than authenticated.

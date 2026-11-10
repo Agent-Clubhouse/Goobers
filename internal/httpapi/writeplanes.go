@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
+	"github.com/goobers/goobers/internal/workitemtarget"
 )
 
 // writeplanes.go implements the daemon write API's claims, trigger, and HITL
@@ -55,6 +56,10 @@ type ClaimRequest struct {
 	// claimrelease.Unknown — and normalized (bounded, scrubbed) by the
 	// service. Refused on acquire and renew.
 	Reason claimrelease.Reason `json:"reason,omitzero"`
+	// ProviderCleanup asks the daemon to retain cleanup custody and remove the
+	// provider marker before releasing this exact claim incarnation.
+	ProviderCleanup bool      `json:"providerCleanup,omitempty"`
+	ClaimedAt       time.Time `json:"claimedAt,omitzero"`
 }
 
 // MaxClaimLeaseSeconds is the ceiling on ClaimRequest.LeaseSeconds: four
@@ -92,20 +97,22 @@ type ClaimResponse struct {
 // same reason internal/dispatcher restates MintedCredential: this package is
 // the server, and the ledger package has no business depending on it.
 type ClaimEntry struct {
-	Verification   ClaimVerification `json:"verification"`
-	ItemID         string            `json:"itemId"`
-	Gaggle         string            `json:"gaggle,omitempty"`
-	Provider       string            `json:"provider,omitempty"`
-	ExternalID     string            `json:"externalId,omitempty"`
-	RunID          string            `json:"runId"`
-	Workflow       string            `json:"workflow"`
-	ClaimedAt      time.Time         `json:"claimedAt"`
-	RenewedAt      time.Time         `json:"renewedAt,omitzero"`
-	ExpiresAt      time.Time         `json:"expiresAt"`
-	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
-	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
-	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
-	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
+	Verification           ClaimVerification `json:"verification"`
+	ItemID                 string            `json:"itemId"`
+	Gaggle                 string            `json:"gaggle,omitempty"`
+	Provider               string            `json:"provider,omitempty"`
+	ExternalID             string            `json:"externalId,omitempty"`
+	RunID                  string            `json:"runId"`
+	Workflow               string            `json:"workflow"`
+	ClaimedAt              time.Time         `json:"claimedAt"`
+	RenewedAt              time.Time         `json:"renewedAt,omitzero"`
+	ExpiresAt              time.Time         `json:"expiresAt"`
+	ReleasePending         bool              `json:"releasePending,omitempty"`
+	SharedAdmissionPending bool              `json:"sharedAdmissionPending,omitempty"`
+	SharedDeadline         time.Time         `json:"sharedDeadline,omitzero"`
+	SharedOwner            sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	SharedRevoked          bool              `json:"sharedRevoked,omitempty"`
+	ReleasedAt             *time.Time        `json:"releasedAt,omitempty"`
 	// ReleaseReason is why a released history entry ended; zero on live
 	// entries and on history recorded before it existed.
 	ReleaseReason claimrelease.Reason `json:"releaseReason,omitzero"`
@@ -415,6 +422,10 @@ func registerClaimRoute(
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "outcome is only valid for settle")
 			return
 		}
+		if !validClaimProviderCleanup(input, release) {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "providerCleanup requires a single-item release and claimedAt")
+			return
+		}
 		if !input.Reason.IsZero() && !settle && !release {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "reason is only valid for release and settle")
 			return
@@ -575,6 +586,12 @@ func registerClaimRecoverRoute(router *Router, claims ClaimService, errorLog *lo
 	})
 }
 
+// ExactWorkItemTriggerService explicitly opts into the additive exact-item wire
+// contract. Older service compositions must refuse it rather than discard it.
+type ExactWorkItemTriggerService interface {
+	SupportsExactWorkItems() bool
+}
+
 func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteTriggerIngest, func(w http.ResponseWriter, request *http.Request) {
 		if triggers == nil {
@@ -593,6 +610,17 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 		if strings.TrimSpace(input.Workflow) == "" {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workflow is required")
 			return
+		}
+		if input.WorkItemID != "" {
+			service, supported := triggers.(ExactWorkItemTriggerService)
+			if !workitemtarget.ValidID(input.WorkItemID) || input.Gaggle == "" || input.Force || input.SourceRun != "" {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workItemId requires an exact numeric item, named gaggle and ordinary manual start")
+				return
+			}
+			if !supported || !service.SupportsExactWorkItems() {
+				writeError(w, http.StatusBadRequest, "exact_work_item_unavailable", "this trigger service does not support exact work item starts")
+				return
+			}
 		}
 		if len(input.RequestID) > MaxTriggerRequestIDBytes {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
@@ -619,6 +647,10 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 		// that the run really does live in that gaggle. Fail closed at every
 		// step.
 		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
+			if input.WorkItemID != "" {
+				writeError(w, http.StatusForbidden, "run_mismatch", "pod principals cannot select a new work item")
+				return
+			}
 			runID, named := podPrincipalRunID(principal)
 			if !named {
 				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal does not name a run")
@@ -783,6 +815,10 @@ func writePlaneError(w http.ResponseWriter, errorLog *log.Logger, operation stri
 	if budgetExceeded(w, err) {
 		return
 	}
+	if errors.Is(err, apicontract.ErrWriteConflict) {
+		writeError(w, http.StatusConflict, "write_conflict", operation+" conflicts with existing content")
+		return
+	}
 	var planeErr *InterventionError
 	if errors.As(err, &planeErr) {
 		status := planeErr.Status
@@ -809,4 +845,12 @@ func writePlaneError(w http.ResponseWriter, errorLog *log.Logger, operation stri
 
 func isolatedClaimListAllowed(principal Principal, input ClaimListRequest) bool {
 	return principal.Subject == podPrincipalSubject(input.RunID) && input.Execution && input.IncludeHistory && input.Scope == ClaimListScopeRun && input.Gaggle == "" && input.Provider == ""
+}
+
+// Cleanup custody is valid only for a release naming one exact incarnation.
+func validClaimProviderCleanup(input ClaimRequest, release bool) bool {
+	if !input.ProviderCleanup && input.ClaimedAt.IsZero() {
+		return true
+	}
+	return release && input.ProviderCleanup && !input.ClaimedAt.IsZero() && input.ItemID != ""
 }

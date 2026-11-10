@@ -19,7 +19,7 @@ func TestChildResolutionHTTPOnlyRequestsUntilHostApplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := WorkspaceCoordinator{Queue: service.Queue}
+	c := WorkspaceCoordinator{Queue: service.Queue.(*triggerqueue.Store)}
 	result, err := c.CaptureResult(t.Context(), submission.Child, nil, TerminalResultInput{State: triggerqueue.ChildFailed, FinishedAt: service.now(), Summary: "No workspace effects"})
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func TestChildResolutionHTTPOnlyRequestsUntilHostApplies(t *testing.T) {
 	if response.Code != http.StatusConflict {
 		t.Fatal("resolved before terminal observation", response.Code, response.Body)
 	}
-	if err := service.Queue.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildFailed, ResultRef: result.ResultRef}, service.now()); err != nil {
+	if err := service.Queue.(*triggerqueue.Store).SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildFailed, ResultRef: result.ResultRef}, service.now()); err != nil {
 		t.Fatal(err)
 	}
 	response = resolveRetryingBudget(t, handler, token, origin.RunID, body)

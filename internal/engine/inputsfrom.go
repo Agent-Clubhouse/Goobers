@@ -2,7 +2,7 @@ package engine
 
 import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // Stage-qualified inputsFrom (#562) on the engine walk — plan item E2.
@@ -28,10 +28,10 @@ import (
 // introduces no map-ordering nondeterminism into the workflow.
 
 // completedStages is every completed stage's Outputs keyed by stage name.
-type completedStages = runner.StageOutputs
+type completedStages = runsemantics.StageOutputs
 
 // newCompletedStages builds the walk's completed-stage state.
-func newCompletedStages() completedStages { return runner.NewStageOutputs() }
+func newCompletedStages() completedStages { return runsemantics.NewStageOutputs() }
 
 // recordCompletedStage applies the runner's own record-or-forget rule to a
 // finished task: a TOLERATED failure (ContinueOnError) is forgotten so a
@@ -51,14 +51,14 @@ func recordCompletedStage(completed completedStages, t apiv1.Task, result apiv1.
 // resolveInputsFrom resolves one inputsFrom value against the run's completed
 // stage outputs. See runner.ResolveInputsFrom for the rule and why it is shared.
 func resolveInputsFrom(value string, upstream apiv1.ResultEnvelope, completed completedStages, qualified bool) (interface{}, bool) {
-	return runner.ResolveInputsFrom(value, upstream, completed, qualified)
+	return runsemantics.ResolveInputsFrom(value, upstream, completed, qualified)
 }
 
 // inputsFromIntegrity grades whatever resolveInputsFrom would bind: the
 // PRODUCING stage for a qualified reference (TBH-4 — bare scalars have nowhere
 // to carry a label of their own), the immediate upstream for a bare key.
 func inputsFromIntegrity(value string, upstream apiv1.ResultEnvelope, completed completedStages, qualified bool) apiv1.Integrity {
-	return runner.InputsFromIntegrity(value, upstream, completed, qualified)
+	return runsemantics.InputsFromIntegrity(value, upstream, completed, qualified)
 }
 
 // inputsFromError phrases an unresolvable reference the way the local runner
@@ -78,5 +78,5 @@ func inputsFromError(
 	completed completedStages,
 	qualified bool,
 ) error {
-	return runner.InputsFromError(taskName, inputKey, value, upstream, completed, qualified)
+	return runsemantics.InputsFromError(taskName, inputKey, value, upstream, completed, qualified)
 }

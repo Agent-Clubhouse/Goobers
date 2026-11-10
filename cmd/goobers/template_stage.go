@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/instance"
@@ -28,7 +30,7 @@ func validateTemplatePackage(name string, tree gaggletemplate.Tree) error {
 	}
 	_, report, err := instance.LoadConfigDir(configDir)
 	if err != nil {
-		return fmt.Errorf("template must be self-contained and valid: %w; %s", err, validationIssueSummary(report))
+		return fmt.Errorf("template must be self-contained and valid: %w; %s", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	for _, warning := range report.Warnings() {
 		if warning.Code == validate.WarningMissingSkillPackage {
@@ -104,7 +106,7 @@ func validateTemplateCandidate(configDir, name, candidate string, manifest []byt
 		}
 	}
 	if _, report, err := instance.LoadConfigDir(stagedConfig); err != nil {
-		return fmt.Errorf("template candidate is invalid: %w; %s", err, validationIssueSummary(report))
+		return fmt.Errorf("template candidate is invalid: %w; %s", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	return nil
 }

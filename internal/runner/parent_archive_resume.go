@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workspaceauthority"
 )
 
 // ParentArchiveRestorer runs under the owning runner's journal/execution lease.
@@ -36,62 +37,36 @@ func (r *Runner) restoreParentWorkspaceArchives(ctx context.Context, run *journa
 		return err
 	}
 	for _, branch := range branches {
-		recorder, err := OwnedBranchRecorder(run, branch.index)
+		recorder, err := OwnedBranchRecorder(run, branch.Index)
 		if err != nil {
 			return err
 		}
-		state, err := ownedParentArchiveState(recorder, branch.name)
+		state, err := ownedParentArchiveState(recorder, branch.Name)
 		if err != nil {
 			return err
 		}
-		if state.retiredAt == 0 {
+		if state.RetiredAt == 0 {
 			continue
 		}
 		if r.cfg.RestoreParentArchive == nil {
 			return errors.New("parent archive restoration service unavailable")
 		}
-		if err := r.cfg.RestoreParentArchive(ctx, recorder, state.archive, state.retiredAt); err != nil {
+		if err := r.cfg.RestoreParentArchive(ctx, recorder, state.Archive, state.RetiredAt); err != nil {
 			return err
 		}
-		verified, err := ownedParentArchiveState(recorder, branch.name)
+		verified, err := ownedParentArchiveState(recorder, branch.Name)
 		if err != nil {
 			return err
 		}
-		if verified.retiredAt != 0 || verified.restoredRetirement != state.retiredAt {
+		if verified.RetiredAt != 0 || verified.RestoredRetirement != state.RetiredAt {
 			return errors.New("parent archive restoration was not durably acknowledged")
 		}
 	}
 	return nil
 }
 
-type parentArchiveBranch struct {
-	name  string
-	index int
-}
+type parentArchiveBranch = workspaceauthority.ParentArchiveBranch
 
 func parentArchiveBranches(events []journal.Event) ([]parentArchiveBranch, error) {
-	var branches []parentArchiveBranch
-	seen := map[string]int{}
-	for _, event := range events {
-		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != ParentContributionRetiredKind {
-			continue
-		}
-		value, err := decodeParentWorkspaceArchive(event)
-		if err != nil {
-			return nil, err
-		}
-		name := value.Custody.Workspace.Branch
-		if prior, exists := seen[name]; exists {
-			if prior != event.Branch {
-				return nil, errors.New("parent archive branch attribution changed")
-			}
-			continue
-		}
-		if len(branches) >= 128 || event.Branch < 0 || event.Branch > 128 {
-			return nil, errors.New("parent archive branch limit exceeded")
-		}
-		seen[name] = event.Branch
-		branches = append(branches, parentArchiveBranch{name: name, index: event.Branch})
-	}
-	return branches, nil
+	return workspaceauthority.ParentArchiveBranches(events)
 }

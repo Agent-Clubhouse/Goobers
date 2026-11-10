@@ -22,12 +22,14 @@ import (
 // the daemon's handler surface (the same reason internal/dispatcher restates
 // MintedCredential).
 type claimRequest struct {
-	Gaggle       string `json:"gaggle,omitempty"`
-	Provider     string `json:"provider,omitempty"`
-	ItemID       string `json:"itemId,omitempty"`
-	RunID        string `json:"runId"`
-	Workflow     string `json:"workflow,omitempty"`
-	LeaseSeconds int    `json:"leaseSeconds,omitempty"`
+	Gaggle          string    `json:"gaggle,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	ItemID          string    `json:"itemId,omitempty"`
+	RunID           string    `json:"runId"`
+	Workflow        string    `json:"workflow,omitempty"`
+	LeaseSeconds    int       `json:"leaseSeconds,omitempty"`
+	ProviderCleanup bool      `json:"providerCleanup,omitempty"`
+	ClaimedAt       time.Time `json:"claimedAt,omitzero"`
 	// Reason is release-only (#4421); omitted when zero so the request shape
 	// of every other route is unchanged.
 	Reason claimrelease.Reason `json:"reason,omitzero"`
@@ -258,7 +260,6 @@ func (h *HTTP) ReleaseScoped(ctx context.Context, key Key, runID string, reason 
 func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string, reason claimrelease.Reason) ([]Entry, error) {
 	// Not replay-safe after an ambiguous failure: the reply lists what THIS call
 	// released, and a replay of a call that did commit answers an empty list.
-	// It is still retried when the daemon refused it before a handler ran.
 	var response claimResponse
 	if err := h.postRelease(ctx, claimRequest{RunID: runID, Reason: reason.Normalize()}, &response, false); err != nil {
 		return nil, err
@@ -425,7 +426,11 @@ func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func(context.Co
 			case <-renewCtx.Done():
 				return
 			case <-ticker.C:
-				ok, err := h.renew(renewCtx, lock.Key, lock.RunID, lock.Workflow, h.cfg.MergeLockLease)
+				// Once dispatched, a renewal must reach its server response
+				// before release can cross the same coordination boundary.
+				renewRequestCtx, cancelRenewRequest := context.WithTimeout(context.WithoutCancel(renewCtx), DefaultHTTPTimeout)
+				ok, err := h.renew(renewRequestCtx, lock.Key, lock.RunID, lock.Workflow, h.cfg.MergeLockLease)
+				cancelRenewRequest()
 				if err != nil {
 					// Best effort: a failed renewal shortens the window to
 					// the remaining lease; the release below is what ends

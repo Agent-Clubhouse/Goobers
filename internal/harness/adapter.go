@@ -101,12 +101,19 @@ type RunRequest struct {
 	// ChildWorkflows is trusted launcher access, never model/config-authored policy.
 	// It is excluded from generic request serialization and rendered prompts.
 	ChildWorkflows *mcpio.ChildWorkflowAccess `json:"-"`
+	// Decide is the trusted per-stage grant of the decision-model tool. It holds
+	// env-var names only and is never model/config-authored.
+	Decide *mcpio.DecideAccess `json:"-"`
 	// PublicationSchemas are the stage's own schema-bound artifact slots, from
 	// trusted workflow configuration. goobers-io's publish_output rejects a
 	// payload that does not satisfy them (#6868).
 	PublicationSchemas []mcpio.PublicationSchema `json:"-"`
 	// MCPReadinessSink records pre-model readiness without tool responses or secrets.
 	MCPReadinessSink func(MCPReadiness) error
+	// UsageSink receives adapter-observed cumulative usage snapshots while the
+	// harness is running. It is host-injected and never serialized or rendered
+	// to the model. Adapters must not populate it from model-authored result data.
+	UsageSink func(map[string]float64) `json:"-"`
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.
@@ -131,6 +138,9 @@ type RunRequest struct {
 	// renderer uses this to reference actual, readable file content instead
 	// of an opaque pointer name.
 	ContextPaths map[string]string
+	// PrivatePaths maps each PrivateInput's Name to the workspace-relative
+	// file holding it. Its content is never journaled (#8425).
+	PrivatePaths map[string]string
 	// Timeout bounds the harness session; zero means no timeout.
 	Timeout time.Duration
 	// Attempt identifies the stage attempt for retry-safe provenance.
@@ -252,7 +262,11 @@ type MCPServerFailure struct {
 // PreflightInfo describes the installed harness verified before agentic work
 // starts. Version is the harness/CLI version used for invocation provenance.
 type PreflightInfo struct {
-	Version string
+	Version  string
+	Warnings []string
+	// Checks separate observed CLI capability evidence from authentication
+	// presence/usability. A successful version probe alone proves neither.
+	Checks []ReadinessCheck
 }
 
 // ConfigWarningKind identifies a non-blocking harness configuration finding.

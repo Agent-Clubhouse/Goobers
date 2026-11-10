@@ -195,8 +195,9 @@ func writePlanePaths() []string {
 }
 
 // TestWritePlaneRoutesAreInTheContract pins the §7 write surface: every plane
-// route exists, is a POST mutation, and carries the mutation budget — the
-// contract discipline the routes joined.
+// route exists and is a POST mutation. Ordinary write-plane routes carry the
+// mutation budget; escalation resolution carries the intervention budget
+// because engine-driven resolution waits for durable HITL delivery.
 func TestWritePlaneRoutesAreInTheContract(t *testing.T) {
 	for _, id := range []apicontract.RouteID{
 		apicontract.RouteClaimAcquire,
@@ -218,8 +219,12 @@ func TestWritePlaneRoutesAreInTheContract(t *testing.T) {
 		if route.Cost != apicontract.CostMutation {
 			t.Errorf("route %s cost = %s, want %s", id, route.Cost, apicontract.CostMutation)
 		}
-		if route.Budget != apicontract.MutationBudget {
-			t.Errorf("route %s budget = %s, want %s", id, route.Budget, apicontract.MutationBudget)
+		wantBudget := apicontract.MutationBudget
+		if id == apicontract.RouteResolveEscalation {
+			wantBudget = apicontract.InterventionBudget
+		}
+		if route.Budget != wantBudget {
+			t.Errorf("route %s budget = %s, want %s", id, route.Budget, wantBudget)
 		}
 	}
 }

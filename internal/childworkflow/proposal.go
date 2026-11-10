@@ -23,12 +23,14 @@ import (
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
-	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const (
@@ -70,6 +72,11 @@ type AdmissionContext struct {
 	// ExecutionRefusal preserves owned custody when current launch permission narrows.
 	ExecutionRefusal        string
 	WorkspaceMutationDenied bool
+	// ClusterModel is host-owned advisory evidence. It is not part of the
+	// authority digest and cannot relax proposal validation.
+	ClusterModel           *workflowcluster.Model
+	ClusterModelConfigured bool
+	ClusterFitness         map[string]workflowcluster.ClusterFitness
 }
 
 // Diagnostic identifies a refused boundary without returning proposal source.
@@ -104,7 +111,8 @@ type Proposal struct {
 	PolicyDigest      string
 	Workflow          apiv1.Workflow
 	Machine           *workflow.Machine
-	Placements        []engine.PinnedPlacement
+	Placements        []dispatcher.PinnedPlacement
+	Novelty           *workflowcluster.Novelty
 }
 
 // Validator owns a deep copy of its trusted inputs. Caller mutations cannot
@@ -190,8 +198,21 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Proposal{credentialCeiling: v.childCredentialCeiling(), Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
-		ConfigDigest: v.context.ConfigDigest, PolicyDigest: v.PolicyDigest(), Workflow: wf, Machine: machine, Placements: pins}, nil
+	proposal := &Proposal{credentialCeiling: v.childCredentialCeiling(), Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
+		ConfigDigest: v.context.ConfigDigest, PolicyDigest: v.PolicyDigest(), Workflow: wf, Machine: machine, Placements: pins,
+	}
+	if v.context.ClusterModelConfigured {
+		novelty := workflowcluster.ScoreWorkflow(v.context.ClusterModel, wf)
+		if fitness, ok := v.context.ClusterFitness[novelty.Nearest]; ok {
+			novelty.HistoricalOutcome = &workflowcluster.HistoricalOutcome{
+				RunCount: fitness.RunCount, SuccessRate: fitness.SuccessRate, InsufficientRuns: fitness.InsufficientRuns,
+			}
+		}
+		novelty.HumanApprovalRequired = novelty.Scored && novelty.OutOfDistribution &&
+			v.context.ParentTask.ChildWorkflows.RequireHumanApprovalForOutOfDistribution
+		proposal.Novelty = &novelty
+	}
+	return proposal, nil
 }
 
 // PolicyDigest identifies pinned policy, enclosing publication permission and
@@ -331,7 +352,7 @@ func (v *Validator) compileProposal(wf apiv1.Workflow, goobers map[string]apiv1.
 	return machine, nil
 }
 
-func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goobers map[string]apiv1.GooberSpec) ([]engine.PinnedPlacement, error) {
+func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goobers map[string]apiv1.GooberSpec) ([]dispatcher.PinnedPlacement, error) {
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{v.context.Gaggle}, Workflows: []apiv1.Workflow{wf}}
 	for name, goober := range goobers {
 		g := apiv1.Goober{Spec: goober}
@@ -347,18 +368,24 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 		return nil, refusal("placement", "", "spec", bounded(err.Error()))
 	}
 	placement := runnersolve.Solve(inventory, requirements)
-	// The runner coordinates children; pinned stages execute on admitted workers.
-	// The child factory independently refuses unsupported or self placements.
+	// Pinned stages execute through the selected trusted-local or worker provider.
+	// The child factory independently verifies its supported placement.
 	if failures := placement.Unsatisfiable(); len(failures) != 0 {
 		return nil, refusal("placement", failures[0].Stage, "runsOn", bounded(failures[0].Unsat.Diagnostic))
 	}
-	pins, err := bootstrap.PinStagePlacements(v.context.Config, set, wf.Spec.Gaggle, def)
+	pins, err := bootstrap.PinChildStagePlacements(v.context.Config, set, wf.Spec.Gaggle, def)
 	if err != nil {
 		return nil, refusal("placement", "", "runsOn", bounded(err.Error()))
 	}
 	if v.context.Backend == BackendEngine {
-		if err := engine.RefusePlacedDefinition(wf.Name, wf.Spec, pins); err != nil {
+		if err := engineadmission.RefusePlacedDefinition(wf.Name, wf.Spec, pins); err != nil {
 			return nil, refusal("backend", "", "spec", bounded(err.Error()))
+		}
+		// A generated child's family has no decision route for its own gates.
+		for _, g := range wf.Spec.Gates {
+			if err := engineadmission.RefuseHumanGate(g); err != nil {
+				return nil, refusal("backend", g.Name, "evaluator", bounded(err.Error()))
+			}
 		}
 	}
 	// Runner specs can contain slices borrowed from the pinned config. The
@@ -367,7 +394,7 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 	if err != nil {
 		return nil, fmt.Errorf("snapshot child placements: %w", err)
 	}
-	var independentPins []engine.PinnedPlacement
+	var independentPins []dispatcher.PinnedPlacement
 	if err := json.Unmarshal(pinBytes, &independentPins); err != nil {
 		return nil, err
 	}
@@ -382,7 +409,9 @@ func (v *Validator) checkGoober(gaggle, name, stage, field string) (apiv1.Goober
 	}
 	// Copilot model authentication can also carry GitHub publication authority.
 	// A model-only declaration does not prove that this credential is isolated.
-	if (!policy.AllowPRPublication || !v.context.AllowPRPublication) && (g.Harness == "" || g.Harness == apiv1.HarnessCopilot) {
+	// Trusted-local binding is available only when the parent opted into preview.
+	trustedLocal := v.context.AllowPreviewFeatures && UsesTrustedLocalExecution(v.context.Config)
+	if !trustedLocal && (!policy.AllowPRPublication || !v.context.AllowPRPublication) && (g.Harness == "" || g.Harness == apiv1.HarnessCopilot) {
 		return apiv1.GooberSpec{}, refusal("credential_isolation", stage, field, "child model authentication may carry GitHub publication authority; a separate model-only authentication path is required")
 	}
 	return g, nil

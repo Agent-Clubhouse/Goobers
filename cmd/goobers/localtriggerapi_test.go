@@ -6,14 +6,60 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+func TestRunExactWorkItemAutoLocalAPI(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		t.Run(strconv.FormatBool(supported), func(t *testing.T) {
+			t.Setenv(remoteDaemonAPIEnv, "")
+			posts := 0
+			root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				if serveRemoteRootFixture(w, r) {
+					return
+				}
+				if r.URL.Path == apicontract.CapabilitiesPath {
+					_ = json.NewEncoder(w).Encode(apicontract.CapabilityDocument{Routes: []apicontract.RouteCapability{{
+						ID: apicontract.RouteTriggerIngest, Available: true, ExactWorkItem: supported,
+					}}})
+					return
+				}
+				posts++
+				var got httpapi.TriggerRequest
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Error(err)
+				}
+				if got.WorkItemID != "42" || got.Gaggle != "acme" || got.Workflow != "repair" || got.RequestID != "exact" {
+					t.Errorf("lost target: %+v", got)
+				}
+				_ = json.NewEncoder(w).Encode(httpapi.TriggerResponse{AcceptanceID: "trigger-exact", State: "accepted"})
+			})
+			layout := instance.NewLayout(root)
+			writeFileContent(t, filepath.Join(root, instance.RootIdentityFileName), "0123456789abcdef0123456789abcdef\n")
+			release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, time.Minute, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			code, stdout, stderr := runArgs(t, "run", "acme/repair", "--work-item=42", "--request-id=exact", "--no-wait", root)
+			if supported {
+				if code != 0 || posts != 1 || !strings.Contains(stdout, "accepted trigger trigger-exact") {
+					t.Fatal(code, posts, stdout, stderr)
+				}
+			} else if code != 2 || posts != 0 || !strings.Contains(stderr, "no trigger sent") {
+				t.Fatal(code, posts, stdout, stderr)
+			}
+		})
+	}
+}
 
 func runIDFromAcceptedTriggerStdout(t *testing.T, layout instance.Layout, stdout string) string {
 	t.Helper()

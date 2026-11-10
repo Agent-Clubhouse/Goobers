@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/daemonclient"
 	"github.com/goobers/goobers/internal/decisiongate"
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 // defaultCredentialTimeout bounds a resolve. Short on purpose: credentials are
@@ -81,6 +82,15 @@ type CredentialResolution struct {
 	RepoAuthScheme        string
 	Grant                 *CredentialGrant
 	PublicationLeakScreen *PublicationLeakScreen
+	DecisionShadow        *DecisionShadow
+}
+
+// DecisionShadow mirrors httpapi.DecisionShadowDelivery.
+type DecisionShadow struct {
+	Settings decisiongate.Settings `json:"settings"`
+	BaseURL  string                `json:"baseUrl"`
+	APIKey   string                `json:"apiKey"`
+	Model    string                `json:"model"`
 }
 
 // PublicationLeakScreen mirrors httpapi.PublicationLeakScreenDelivery.
@@ -159,9 +169,9 @@ func (e *CredentialResolveRefusal) Deterministic() bool {
 // credential request at all.
 //
 // A non-200 answer from the plane is returned as a *CredentialResolveRefusal;
-// every other failure — including a plane that could not be reached — is an
-// untyped error, so errors.As on the refusal type separates the plane's
-// judgement from the transport's.
+// a malformed successful answer is a *CredentialResponseError. Both expose
+// Deterministic so refresh callers can distinguish invalid delivery and
+// terminal refusals from transient transport failures.
 func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage string, capabilities []string) (CredentialResolution, error) {
 	return c.Resolve(ctx, CredentialResolveRequest{RunID: runID, Stage: stage, Capabilities: capabilities})
 }
@@ -223,7 +233,7 @@ func (c *CredentialResolveClient) post(ctx context.Context, endpoint string, bod
 	// credential per call rather than consuming a one-shot grant. A repeated
 	// resolve can only return the same entitlement again.
 	var resolution CredentialResolution
-	retryErr := withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
+	retryErr := retryutil.Until(ctx, deadline, c.RetryPolicy.Backoff(), func(ctx context.Context) (bool, error) {
 		// A fresh request per attempt: an *http.Request body is consumed by
 		// the first send, so a retried request would post an empty body and
 		// be refused as invalid — a self-inflicted non-retryable failure.
@@ -269,30 +279,46 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 		if len(detail) > 400 {
 			detail = detail[:400] + "…"
 		}
-		return CredentialResolution{}, retryableStatus(resp.StatusCode), &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
+		return CredentialResolution{}, retryutil.RetryableStatus(resp.StatusCode), &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
 	}
 	var decoded struct {
 		Credentials           []MintedCredential     `json:"credentials"`
 		RepoAuthScheme        string                 `json:"repoAuthScheme"`
 		Grant                 *CredentialGrant       `json:"grant"`
 		PublicationLeakScreen *PublicationLeakScreen `json:"publicationLeakScreen"`
+		DecisionShadow        *DecisionShadow        `json:"decisionShadow"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return CredentialResolution{}, false, fmt.Errorf("dispatcher: decode credential resolve response: %w", err)
+		return CredentialResolution{}, false, &CredentialResponseError{err: fmt.Errorf("dispatcher: decode credential resolve response: %w", err)}
 	}
 	// A granted capability that resolved to an EMPTY value is a fault, not a
 	// silent no-op: the stage would run believing it was credentialed and fail
 	// somewhere far away, against the provider.
 	for _, cred := range decoded.Credentials {
 		if strings.TrimSpace(cred.Value) == "" {
-			return CredentialResolution{}, false, fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)
+			return CredentialResolution{}, false, &CredentialResponseError{err: fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)}
 		}
 	}
 	return CredentialResolution{
 		Credentials: decoded.Credentials, RepoAuthScheme: decoded.RepoAuthScheme,
 		Grant: decoded.Grant, PublicationLeakScreen: decoded.PublicationLeakScreen,
+		DecisionShadow: decoded.DecisionShadow,
 	}, false, nil
 }
+
+// CredentialResponseError identifies an invalid successful response from the
+// credential plane. Refresh callers must not treat it as a transient outage
+// and continue using an older credential snapshot.
+type CredentialResponseError struct {
+	err error
+}
+
+func (e *CredentialResponseError) Error() string { return e.err.Error() }
+func (e *CredentialResponseError) Unwrap() error { return e.err }
+
+// Deterministic prevents refresh callers from retaining a cached credential
+// after the plane returned an invalid successful response.
+func (e *CredentialResponseError) Deterministic() bool { return true }
 
 // defaultCredentialRefreshDeadline bounds a mid-stage refresh's retries. It is
 // short: the caller is a live provider request that already has a value to
