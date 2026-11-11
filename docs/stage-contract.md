@@ -1208,6 +1208,28 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
 > attributed to the invocation after the fact.
 
+> **Explicit unfinished work gets one same-session continuation.** A schema-valid
+> agentic task result with `status: failure` and exactly
+> `error.code: INCOMPLETE_WORK` asks the built-in harness adapters to continue
+> the remaining work once, using their existing completion-repair allowance.
+> This is not a fresh stage attempt or workflow submission: it keeps the
+> workspace, session context, original deadline and usage accounting. Copilot
+> keeps its live controlled session or resumes the original CLI session;
+> a custom launcher without a resumable session fails explicitly rather than
+> starting unrelated fresh work. Claude and Codex use their existing resumes.
+> The continuation must inspect current state and must not replay completed
+> external actions. It receives only the original session's remaining time.
+>
+> The code is an explicit incomplete-work signal, not a heuristic match on
+> prose. A `blocked` result, any other error code, explicit `retryable: false`,
+> or a result with an error cause chain does not opt in. Report setup, test,
+> access and other concrete failures under their own codes; do not disguise
+> them as `INCOMPLETE_WORK`. Cancellation, real timeouts and continuation
+> process/capture failures remain failures. A second incomplete response
+> remains an ordinary `INCOMPLETE_WORK` failure, not invalid JSON, and receives
+> no further continuation. A prior schema/commit/publication repair already
+> consumes this same single allowance; the two mechanisms do not stack.
+
 > **A deadline you did not reach is not a timeout (#5871).** Only the runtime
 > observes a stage's execution deadline; it records it as an
 > `execution-deadline.v1` annotation, and a session that really runs out of

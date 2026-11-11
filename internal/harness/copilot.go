@@ -1359,6 +1359,14 @@ func runCopilotCompletionRepair(
 	if !repairableCompletionError(completionErr) {
 		return result, payload, nil, completionErr
 	}
+	continuing := errors.Is(completionErr, errIncompleteWork)
+	if continuing && ctx.Err() != nil {
+		failure := ErrCanceled
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			failure = ErrTimeout
+		}
+		return result, payload, errors.Join(failure, ctx.Err()), nil
+	}
 	totalTimeout := req.Timeout
 	if totalTimeout <= 0 {
 		totalTimeout = DefaultTimeout
@@ -1367,7 +1375,7 @@ func runCopilotCompletionRepair(
 	if remaining <= 0 {
 		return copilotCompletionRepairTimeout(result, payload, completionErr, totalTimeout, argv[0])
 	}
-	if refreshEnv != nil {
+	if refreshEnv != nil && !continuing {
 		refreshCtx, cancel := context.WithTimeout(ctx, remaining)
 		refreshedEnv, err := refreshEnv(refreshCtx, env, req)
 		cancel()
@@ -1402,7 +1410,13 @@ func runCopilotCompletionRepair(
 		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		Activity:                     agentTelemetry.activityObserver(),
 	}
-	if usage != nil {
+	if continuing {
+		var err error
+		recoveryReq.Command, err = copilotIncompleteWorkCommand(runner, recoveryReq.Command)
+		if err != nil {
+			return result, payload, err, nil
+		}
+	} else if usage != nil {
 		var err error
 		recoveryReq.Command, recoveryReq.Env, err = usage.prepare(ctx, runner, req, recoveryReq.Command, recoveryReq.Env)
 		if err != nil {
@@ -1410,7 +1424,7 @@ func runCopilotCompletionRepair(
 		}
 		nativeTranscriptPath = usage.transcriptPath
 	}
-	if restarter, ok := runner.(copilotRepairRestarter); ok {
+	if restarter, ok := runner.(copilotRepairRestarter); ok && !continuing {
 		if err := restarter.RestartCopilotForRepair(ctx, recoveryReq); err != nil {
 			runErr, keptErr := repairExit(completionErr, err)
 			return result, payload, runErr, keptErr

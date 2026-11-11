@@ -520,9 +520,10 @@ func validateCompletion(req RunRequest, payload []byte, readErr error) error {
 		}
 		return fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
 	}
-	return nil
+	return incompleteWorkCompletion(req, payload)
 }
 
 func repairableCompletionError(err error) bool {
-	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion) || isCompletionPostcondition(err)
+	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion) ||
+		errors.Is(err, errIncompleteWork) || isCompletionPostcondition(err)
 }
