@@ -191,9 +191,9 @@ Set `JAVA_HOME`/`PATH` to your installed runtime, `GOOBERS_TEST_JAVA_HOME` to it
 absolute root, and `GOOBERS_TEST_TLC_JAR` to the absolute pinned jar path:
 
 ```text
-GOTOOLCHAIN=go1.26.10 go test ./internal/executor -run '^(TestTLC|TestVerification)' -count=1
-GOTOOLCHAIN=go1.26.10 TESTDEP_STRICT=1 go test -tags=integration ./internal/executor -run '^TestIntegrationTLC(ReviewedNative)?$' -count=1 -v
-GOTOOLCHAIN=go1.26.10 TESTDEP_STRICT=1 go test -tags=integration ./internal/runtimewiring -run '^TestIntegrationTLCWorkflow$' -count=1 -v
+GOTOOLCHAIN=go1.26.11 go test ./internal/executor -run '^(TestTLC|TestVerification)' -count=1
+GOTOOLCHAIN=go1.26.11 TESTDEP_STRICT=1 go test -tags=integration ./internal/executor -run '^TestIntegrationTLC(ReviewedNative)?$' -count=1 -v
+GOTOOLCHAIN=go1.26.11 TESTDEP_STRICT=1 go test -tags=integration ./internal/runtimewiring -run '^TestIntegrationTLCWorkflow$' -count=1 -v
 ```
 
 The integration tests declare Java through `testdep.Require`; they never
@@ -219,7 +219,7 @@ tool variables above, and requires both integration tests to pass rather than
 silently skip:
 
 ```text
-GOTOOLCHAIN=go1.26.10 TESTDEP_STRICT=1 go test -tags=integration ./internal/executor -run '^TestIntegrationTLCReviewedNative$' -count=1 -v
+GOTOOLCHAIN=go1.26.11 TESTDEP_STRICT=1 go test -tags=integration ./internal/executor -run '^TestIntegrationTLCReviewedNative$' -count=1 -v
 ```
 
 Actual native results through dispatch, disk journal and Backprop projection:
