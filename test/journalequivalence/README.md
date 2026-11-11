@@ -66,7 +66,7 @@ metadata assertions and the exclusion boundaries.
 
 ## Running
 
-Use Go 1.26.10, a local PostgreSQL 16 container, and the pinned Temporal CLI:
+Use Go 1.26.11, a local PostgreSQL 16 container, and the pinned Temporal CLI:
 
 ```sh
 GOOBERS_TEST_POSTGRES_URL=postgres://... \
