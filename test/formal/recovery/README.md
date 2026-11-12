@@ -116,7 +116,7 @@ Capture stdout/stderr if refreshing the logs.
 From the repository root, implementation witnesses:
 
 ```powershell
-$env:GOTOOLCHAIN = 'go1.26.10'
+$env:GOTOOLCHAIN = 'go1.26.11'
 go test ./internal/runner ./internal/journal -run '^Test(TerminalRecoveryModelTraces|RunnerTerminalRecoveryModelTraces|RecoverHealsStaleTerminalCheckpoint|ReaderPhaseReconstructsFromLogNotCheckpoint|RunResumedReopensTerminalPhaseAndRecoversTarget|RunnerResumeTrustsJournalOverStaleTerminalCheckpoint|RunnerResumeReplaysBlockedFinishAsEscalated|ConformanceViewCapturesFullNormativeFieldSet)$' -count=1
 go vet ./internal/journal ./internal/runner
 ```

@@ -385,9 +385,12 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 		t.Fatalf("repeat apply: code=%d stderr=%q", code, stderr)
 	}
 	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloadRejected, 2)
-	if digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir()); err != nil || digest != status.AppliedDigest {
-		t.Fatalf("repeat rejection left unapplied tree: digest=%s err=%v want=%s", digest, err, status.AppliedDigest)
-	}
+	// A queued Git watch event can start another reconciliation after apply
+	// returns. As above, observe rollback completion, not just its rejection.
+	waitForConfigValue(t, "repeat rejection to restore the applied tree", func() (string, bool) {
+		digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
+		return digest, err == nil && digest == status.AppliedDigest
+	})
 
 	validNext := strings.Replace(valid, "name: reconciled-implement", "name: reconciled-next", 1)
 	if err := os.WriteFile(workflowPath, []byte(validNext), 0o644); err != nil {

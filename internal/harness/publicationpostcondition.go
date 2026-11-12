@@ -65,6 +65,9 @@ func (e *Executor) runSettled(ctx context.Context, env apiv1.InvocationEnvelope,
 		}
 	}
 	out, err := publication.settle(commit.settle(e.runAdapter(ctx, req, nested)))
+	// A repeated incomplete result is still a valid failure, not an adapter
+	// fault. Keep every other error (including timeout and capture failures).
+	err = withoutPostcondition(err, errIncompleteWork)
 	return out, errors.Join(err, e.journalPublicationDiagnostics(env, req, publication))
 }
 

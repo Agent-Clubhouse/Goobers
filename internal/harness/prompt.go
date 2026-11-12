@@ -161,6 +161,8 @@ func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	problem := "Your previous turn ended without writing the mandatory completion file."
 	if postcondition, ok := postconditionRepairProblem(validationErr); ok {
 		problem = postcondition
+	} else if errors.Is(validationErr, errIncompleteWork) {
+		problem = incompleteWorkRepairProblem()
 	} else if errors.Is(validationErr, ErrInvalidCompletion) {
 		problem = fmt.Sprintf(
 			"Your previous turn wrote a completion file that failed schema validation: %s.",
@@ -183,6 +185,8 @@ func renderResponseCompletionRepairPrompt(req RunRequest, validationErr error) s
 	problem := "Your previous turn ended without returning the mandatory completion as valid JSON."
 	if postcondition, ok := postconditionRepairProblem(validationErr); ok {
 		problem = postcondition
+	} else if errors.Is(validationErr, errIncompleteWork) {
+		problem = incompleteWorkRepairProblem()
 	} else if errors.Is(validationErr, ErrInvalidCompletion) {
 		problem = fmt.Sprintf(
 			"Your previous turn returned a completion that failed schema validation: %s.",
