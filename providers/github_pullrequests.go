@@ -137,33 +137,33 @@ func (p *GitHubProvider) ListOpenPullRequests(ctx context.Context, repo Reposito
 // emit a mutation event.
 func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("request", err)
 	}
 	if req.PullID == "" {
-		return PullRequestPollResult{}, errPullIDRequired
+		return pullRequestPollFailure("request", errPullIDRequired)
 	}
 	prEndpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("request", err)
 	}
 	var pr githubPullRequestDetail
 	if err := p.do(ctx, http.MethodGet, prEndpoint, nil, &pr); err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("pull-request", err)
 	}
 
 	decision, requestedChanges, err := p.reviewDecision(ctx, req.Repository, req.PullID)
 	if err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("reviews", err)
 	}
 
-	checkState, checks, verdictStatus, err := p.combinedCheckStateAndVerdict(ctx, req.Repository, pr.Head.SHA)
+	checkState, checks, verdictStatus, observed, err := p.combinedCheckStateAndVerdict(ctx, req.Repository, pr.Head.SHA)
 	if err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("checks", err)
 	}
 
 	comments, err := pullRequestComments(ctx, p, p.BaseURL, req.Repository, req.PullID, req.CommentsSince)
 	if err != nil {
-		return PullRequestPollResult{}, err
+		return pullRequestPollFailure("comments", err)
 	}
 	result := pullPollResultFromProjection(githubPRProjection(pr))
 	result.Author = pr.User.Login
@@ -175,6 +175,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 	result.CheckState = checkState
 	result.Checks = checks
 	result.VerdictStatus = verdictStatus
+	result.VerdictReadStatus = observed
 	result.CommentsSince = comments
 	return result, nil
 }
@@ -1263,7 +1264,7 @@ func (p *GitHubProvider) CIFailures(ctx context.Context, repo RepositoryRef, ref
 	if ref == "" {
 		return nil, fmt.Errorf("ref is required")
 	}
-	checks, _, err := p.checkDetails(ctx, repo, ref)
+	checks, _, _, err := p.checkDetails(ctx, repo, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -1291,20 +1292,20 @@ func (p *GitHubProvider) CIFailures(ctx context.Context, repo RepositoryRef, ref
 // combinedCheckState normalizes GitHub's legacy combined status plus check-runs
 // into a single CheckState + per-check detail refs (BL-031).
 func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, error) {
-	state, details, _, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
+	state, details, _, _, err := p.combinedCheckStateAndVerdict(ctx, repo, ref)
 	return state, details, err
 }
 
 // combinedCheckStateAndVerdict is combinedCheckState plus the merge-review
 // verdict status read from the same combined-status response (#4199), which
 // is reported apart from CI rather than folded into the CheckState.
-func (p *GitHubProvider) combinedCheckStateAndVerdict(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, *CheckDetail, error) {
+func (p *GitHubProvider) combinedCheckStateAndVerdict(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, *CheckDetail, VerdictReadStatus, error) {
 	if ref == "" {
-		return CheckStatePending, nil, nil, nil
+		return CheckStatePending, nil, nil, VerdictReadIncomplete, nil
 	}
-	resolved, verdict, err := p.checkDetails(ctx, repo, ref)
+	resolved, verdict, observed, err := p.checkDetails(ctx, repo, ref)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, observed, err
 	}
 	details := make([]CheckDetail, 0, len(resolved))
 	failing, pending := false, false
@@ -1319,36 +1320,41 @@ func (p *GitHubProvider) combinedCheckStateAndVerdict(ctx context.Context, repo 
 	}
 	switch {
 	case failing:
-		return CheckStateFailing, details, verdict, nil
+		return CheckStateFailing, details, verdict, observed, nil
 	case pending:
-		return CheckStatePending, details, verdict, nil
+		return CheckStatePending, details, verdict, observed, nil
 	default:
 		// GitHub permits a PR with no statuses or check runs to merge. Treat
 		// the empty set as passing rather than polling indefinitely for a
 		// workflow that may never exist.
-		return CheckStatePassing, details, verdict, nil
+		return CheckStatePassing, details, verdict, observed, nil
 	}
 }
 
 // checkDetails reads ref's CI statuses and check runs. The merge-review
 // verdict status is returned separately and never as a CI check (#4199).
-func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, ref string) ([]resolvedCheckDetail, *CheckDetail, error) {
+func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, ref string) ([]resolvedCheckDetail, *CheckDetail, VerdictReadStatus, error) {
 	var details []resolvedCheckDetail
 	var verdict *CheckDetail
 	statusEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, VerdictReadIncomplete, err
 	}
 	var statuses []githubStatus
+	complete := true
 	if err := p.getAllPages(ctx, statusEndpoint, func(page []byte) error {
 		var pageOut githubCombinedStatus
 		if err := json.Unmarshal(page, &pageOut); err != nil {
 			return fmt.Errorf("decode combined status page: %w", err)
 		}
+		complete = complete && pageOut.Statuses != nil
+		for _, status := range pageOut.Statuses {
+			complete = complete && validObservedStatus(status.Context, status.State)
+		}
 		statuses = append(statuses, pageOut.Statuses...)
 		return nil
 	}); err != nil {
-		return nil, nil, err
+		return nil, nil, VerdictReadIncomplete, err
 	}
 	for _, status := range statuses {
 		if found, ok := mergeReviewStatusDetail(status.Context, status.State, status.Description, status.TargetURL); ok {
@@ -1364,7 +1370,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 
 	runsEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "check-runs")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, VerdictReadIncomplete, err
 	}
 	var checkRuns []githubCheckRun
 	// The single biggest silent failure in the cluster: a failing check-run on
@@ -1378,7 +1384,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		return nil
 	}); err != nil {
 		if !IsForbiddenPATError(err) {
-			return nil, nil, err
+			return nil, nil, VerdictReadIncomplete, err
 		}
 		// Fine-grained PATs have no grantable "Checks" permission at all, so
 		// this specific 403 is permanent, not transient (#2685). If the token
@@ -1387,23 +1393,23 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		// before failing CI visibility closed.
 		runs, actionsErr := p.actionsRunsForRef(ctx, repo, ref)
 		if actionsErr != nil {
-			return nil, nil, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
+			return nil, nil, VerdictReadIncomplete, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
 		}
 		runs, dedupErr := p.withoutSupersededCancelledActionsRuns(ctx, repo, runs)
 		if dedupErr != nil {
-			return nil, nil, fmt.Errorf("actions/runs fallback: %w", dedupErr)
+			return nil, nil, VerdictReadIncomplete, fmt.Errorf("actions/runs fallback: %w", dedupErr)
 		}
 		for _, run := range runs {
 			state, err := p.actionsRunState(ctx, repo, run)
 			if err != nil {
-				return nil, nil, fmt.Errorf("actions/runs fallback: %w", err)
+				return nil, nil, VerdictReadIncomplete, fmt.Errorf("actions/runs fallback: %w", err)
 			}
 			details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
 				Name: run.Name, State: state, Conclusion: run.Conclusion, URL: run.HTMLURL,
 				NoVerdict: state == CheckStatePending && githubRunEndedWithoutVerdict(run.Status, run.Conclusion),
 			}})
 		}
-		return details, verdict, nil
+		return details, verdict, verdictReadStatus(complete), nil
 	}
 	for _, run := range withoutSupersededCancelledCheckRuns(checkRuns) {
 		state := normalizeCheckRunState(run.Status, run.Conclusion)
@@ -1416,7 +1422,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 			checkRunID: run.ID,
 		})
 	}
-	return details, verdict, nil
+	return details, verdict, verdictReadStatus(complete), nil
 }
 
 // actionsRunState is a workflow run's check state in the actions/runs

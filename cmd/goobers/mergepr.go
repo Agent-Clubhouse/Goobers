@@ -328,11 +328,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		pf(stderr, "error: open claim ledger: %v\n", err)
 		return 1
 	}
-	mergeLock := claimsclient.MergeLock{
-		Key:      claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name),
-		RunID:    os.Getenv(executor.RunIDEnvVar),
-		Workflow: os.Getenv(executor.WorkflowEnvVar),
-	}
+	mergeLock := mergePRLock(repo)
 
 	var poll providers.PullRequestPollResult
 	var pollErr error
@@ -345,6 +341,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 	var policyErr error
 	var optedOutReason string
 	var adoCleanup *mergeBranchCleanup
+	var verdictObservation prstatus.VerdictObservation
 	lockErr := ledger.MergeLock(ctx, mergeLock, func(ctx context.Context) error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
@@ -356,6 +353,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 		// works for both GitHub and ADO — behavior on GitHub is identical to the
 		// former concrete call.
 		poll, pollErr = dispatcher.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+		verdictObservation = prstatus.ObserveVerdict(stageProvider, poll, pollErr, expectedBaseSHA)
 		if pollErr != nil {
 			return nil
 		}
@@ -487,6 +485,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
 			return nil
 		})
 	})
+	shadowOutcome := mergeShadowOutcome(lockErr, pollErr, optedOutReason, advisoryMode, reasons, commitErr, checkErr, policyErr, mergeAttempted, mergeErr)
+	recordMergeVerdictShadow(root, repo, pullNumber, expectedHeadSHA, expectedBaseSHA, poll, verdictObservation, mergeAttempted, shadowOutcome, stdout, stderr)
 	if lockErr != nil {
 		pf(stderr, "error: acquire merge lock: %v\n", lockErr)
 		return 1
@@ -1221,4 +1221,13 @@ func mergeResultFields(selectedNumber, selectedHeadSha, landOutcome, mergeSHA st
 		}
 	}
 	return out
+}
+
+// mergePRLock captures the existing run-scoped merge custody key and owner.
+func mergePRLock(repo providers.RepositoryRef) claimsclient.MergeLock {
+	return claimsclient.MergeLock{
+		Key:      claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name),
+		RunID:    os.Getenv(executor.RunIDEnvVar),
+		Workflow: os.Getenv(executor.WorkflowEnvVar),
+	}
 }

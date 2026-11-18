@@ -895,6 +895,13 @@ type PullRequestPollResult struct {
 	// when the head carries no such status or the provider exposes none
 	// (Azure DevOps keeps its verdict in the goobers/validation PR status).
 	VerdictStatus *CheckDetail `json:"verdictStatus,omitempty"`
+	// VerdictReadStatus describes only the evidence returned by the native
+	// commit-status read. It does not change CheckState or merge policy.
+	// Empty means this provider does not establish that read contract.
+	VerdictReadStatus VerdictReadStatus `json:"verdictReadStatus,omitempty"`
+	// PollErrorPhase is a bounded diagnostic when PollPullRequest returns an
+	// error. Callers must still honor the error, not use this as a partial poll.
+	PollErrorPhase string `json:"pollErrorPhase,omitempty"`
 }
 
 // ClosePullRequestRequest describes closing a pull request, optionally leaving a comment.

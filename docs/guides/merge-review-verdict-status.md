@@ -105,6 +105,48 @@ status, so this conjunct trusts any writer of the context. That only adds
 refusals. For native merges, the required check's expected source (below) is
 what keeps other writers out.
 
+## Missing-verdict shadow evidence
+
+`merge-pr` records one `merge-verdict-shadow` runner annotation after each
+locked live poll. This is observation-only: there is no require-mode flag,
+new status publication, or changed landing/refusal decision. A missing status
+still permits the existing landing path when all other gates permit it.
+
+The event records `observation` (present, absent, unsupported, unreadable),
+closed `reasonClass`, `pollPhase`, `verdictState`, `baseMatch` and `outcome`
+fields, plus `landingAttempted` and `wouldBlock`. `wouldBlock` is true only
+when a complete native-status read found no verdict and the existing path
+attempted landing. It does not mean landing succeeded. Opt-out labels,
+advisory mode, other gate refusals and unknown reads are excluded. Present
+malformed or stale evidence is classified separately; existing refusal logic
+continues to decide the outcome.
+
+GitHub proves absence from explicit non-null status arrays across the pages
+its existing poll reads. Gitea's current poll reads one [paginated combined-status page](https://docs.gitea.com/enterprise/api/22/operations/repo-get-combined-status-by-ref/):
+absence requires an explicit array and `total_count` equal to its length.
+Missing/null arrays, incomplete Gitea pages and unknown status shapes are
+unreadable, even if the existing provider policy permits landing. ADO has no
+native verdict reader on this path and is unsupported, not absent. These
+observations reuse the existing poll; they perform no additional provider call.
+
+Repository canonical identity, PR and actual/expected head/base SHAs are
+subject evidence fields, not counter dimensions. Aggregate only the closed
+provider/state/reason/outcome fields. Status descriptions, comment bodies,
+tokens and raw provider/annotation errors are not copied to this event.
+Annotation failures produce a fixed safe warning and leave the merge result
+unchanged. The existing file journal or run-scoped pod journal plane carries
+these events; the latter keeps its existing bounded emission timeout.
+
+The daemon's ordinary instance-journal age compaction removes these annotations
+using `telemetry.retention.window` (90 days by default). This is an age window,
+not a byte/rate cap or deduplication policy: repeated invocations emit repeated
+evidence, and a stopped or failing retention sweep cannot promise bounded disk
+usage. Per-run artifact pruning has separate enable/grace controls; this change
+does not change any retention policy. Operators should measure absent eligible
+attempts separately from unsupported/unreadable and already-blocked attempts
+before proposing enforcement. Native context-writer trust remains as described
+above; this telemetry does not establish a new status authority.
+
 ## Configure the required check
 
 ### GitHub
