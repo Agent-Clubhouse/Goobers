@@ -1470,7 +1470,7 @@ jobs:
           cache: true
 
       - name: Set up Java
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880
         with:
           distribution: temurin
           java-version: "21"
@@ -1495,7 +1495,7 @@ jobs:
       # dotnet@9 and python@3.12; these pins are what lets their tier rows in
       # docs/guides/stack-support.md claim "Shipped, CI-green".
       - name: Set up .NET
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: "9.0.x"
 
@@ -1896,7 +1896,7 @@ jobs:
       # same java-version, same checked-out pom — publishes the entry every PR's
       # `integration` job already looks for.
       - name: Set up Java
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880
         with:
           distribution: temurin
           java-version: "21"
@@ -1936,7 +1936,7 @@ jobs:
       # keeps a failed Maven warm above from skipping these independent ones.
       - name: Set up .NET
         if: ${{ !cancelled() }}
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: "9.0.x"
 
